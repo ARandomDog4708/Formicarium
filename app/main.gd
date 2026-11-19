@@ -12,13 +12,15 @@ const BLUE := Color("85bed0")
 const AMBER := Color("e9ae67")
 
 var sim: Sim
-var habitat: Habitat
+var habitats: Array[Habitat] = []
+var active_world: int = Sim.OUTDOORS
+var inspection: Dictionary = {}
 var regular: SystemFont
 var bold: SystemFont
 var mono: SystemFont
 var paused: bool = false
 var rate: int = 1
-var selected_id: int = 36
+var selected_id: int = 0
 var tool: int = 0
 var pause_button: Button
 var step_button: Button
@@ -44,13 +46,17 @@ func _ready() -> void:
 	mono.font_names = PackedStringArray(["DejaVu Sans Mono", "Consolas", "Menlo", "Liberation Mono"])
 	theme = _make_theme()
 	sim = Sim.new()
-	habitat = Habitat.new()
-	habitat.sim = sim
-	habitat.position = Vector2(88, 218)
-	habitat.size = Vector2(1014, 608.4)
-	habitat.ant_selected.connect(func(id: int): selected_id = id)
-	habitat.habitat_clicked.connect(_on_habitat_click)
-	add_child(habitat)
+	for location in [Sim.OUTDOORS, Sim.COLONY]:
+		var view := Habitat.new()
+		view.sim = sim
+		view.world_id = location
+		view.position = Vector2(90 + 518 * location, 246)
+		view.size = Vector2(490, 576)
+		view.ant_selected.connect(_select_ant)
+		view.habitat_clicked.connect(_on_habitat_click)
+		view.activated.connect(_focus_view)
+		habitats.append(view)
+		add_child(view)
 	_build_controls()
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--capture="):
@@ -117,13 +123,14 @@ func _button(text: String, rect: Rect2, action: Callable, tooltip: String = "") 
 func _build_controls() -> void:
 	_button("Reset colony", Rect2(1262, 25, 144, 36), _reset, "Restart with the same seed [R]")
 	_button("?", Rect2(1216, 25, 34, 36), _toggle_help, "Controls and simulation rules [H]")
-	for i in range(3):
-		var texts := ["01", "02", "03"]
-		var tips := ["Inspect a worker [1]", "Place food on walkable ground [2]", "Paint food pheromone; hold Shift for home pheromone [3]"]
+	for i in range(4):
+		var texts := ["01", "02", "03", "04"]
+		var tips := ["Inspect a worker [1]", "Place food on walkable ground [2]", "Paint food pheromone; hold Shift for home pheromone [3]", "Place an ant [4]; hold Shift to place ten"]
 		var b := _button(texts[i], Rect2(15, 231 + i * 62, 43, 43), _select_tool.bind(i), tips[i])
 		b.toggle_mode = true
 		tool_buttons.append(b)
 	_select_tool(0)
+	_button("+10", Rect2(264, 136, 48, 26), func(): _add_workers(10), "Add ten workers near the entrance in the active map")
 	pause_button = _button("Ⅱ  Pause", Rect2(88, 840, 110, 34), func(): _set_paused(not paused), "Pause / resume [Space]")
 	step_button = _button("Step", Rect2(206, 840, 60, 34), _single_step, "Advance one 1/60 second tick while paused [N]")
 	step_button.disabled = true
@@ -133,10 +140,10 @@ func _build_controls() -> void:
 		b.toggle_mode = true
 		rate_buttons.append(b)
 	_set_rate(1)
-	_button("Clear trails", Rect2(458, 840, 106, 34), func(): sim.trails.clear(); _notify("Pheromones cleared"), "Remove every trail; local sources resume emitting")
-	_button("−", Rect2(931, 840, 34, 34), func(): habitat.zoom_by(1.0 / 1.2), "Zoom out [mouse wheel]")
-	_button("+", Rect2(971, 840, 34, 34), func(): habitat.zoom_by(1.2), "Zoom in [mouse wheel]")
-	_button("Fit", Rect2(1013, 840, 88, 34), func(): habitat.reset_view(), "Reset zoom and pan [0]")
+	_button("Clear trails", Rect2(458, 840, 106, 34), func(): sim.clear_trails(); _notify("Pheromones cleared in both maps"), "Remove every trail; local sources resume emitting")
+	_button("−", Rect2(931, 840, 34, 34), func(): habitats[active_world].zoom_by(1.0 / 1.2), "Zoom out [mouse wheel]")
+	_button("+", Rect2(971, 840, 34, 34), func(): habitats[active_world].zoom_by(1.2), "Zoom in [mouse wheel]")
+	_button("Fit", Rect2(1013, 840, 88, 34), _fit_views, "Reset zoom and pan [0]")
 	_slider("outer", 414, 36, 140, sim.outer_radius, 1, func(v: float):
 		sim.outer_radius = v
 		sliders.inner.max_value = minf(32, v - 8)
@@ -144,10 +151,10 @@ func _build_controls() -> void:
 	_slider("inner", 472, 2, 32, sim.inner_radius, 1, func(v: float): sim.inner_radius = v)
 	_slider("angle", 530, 45, 180, sim.view_angle, 5, func(v: float): sim.view_angle = v)
 	_slider("turn", 588, 90, 1080, sim.turn_rate, 30, func(v: float): sim.turn_rate = v)
-	_slider("decay", 646, 8, 90, sim.trails.half_life, 1, func(v: float): sim.trails.half_life = v)
-	_check("Home trails", Vector2(1145, 725), true, func(v: bool): habitat.show_home = v)
-	_check("Food trails", Vector2(1275, 725), true, func(v: bool): habitat.show_food = v)
-	_check("Selected ant's sensing cone", Vector2(1145, 760), true, func(v: bool): habitat.show_sensors = v)
+	_slider("decay", 646, 8, 90, sim.fields[0].half_life, 1, func(v: float): sim.set_half_life(v))
+	_check("Home trails", Vector2(1145, 725), true, func(v: bool): _set_layer("show_home", v))
+	_check("Food trails", Vector2(1275, 725), true, func(v: bool): _set_layer("show_food", v))
+	_check("Selected ant's sensing cone", Vector2(1145, 760), true, func(v: bool): _set_layer("show_sensors", v))
 	notice_label = Label.new()
 	notice_label.position = Vector2(335, 778)
 	notice_label.size = Vector2(510, 35)
@@ -200,7 +207,7 @@ func _build_help() -> void:
 	title.add_theme_font_size_override("font_size", 23)
 	column.add_child(title)
 	var body := Label.new()
-	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\nShift         Paint home pheromone instead of food\nWheel      Zoom around the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nExplorers lay home trails; returning workers lay food trails.\nPheromones evaporate. Nothing directs ants through walls."
+	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\n4              Place an ant (Shift: ten ants)\nShift         Paint home pheromone instead of food\nWheel      Zoom the map under the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nExplorers lay home trails; returning workers lay food trails.\nThe mound links the maps; scent passes through its hole.\nPheromones evaporate. Solid ground blocks scent."
 	body.add_theme_font_size_override("font_size", 13)
 	body.add_theme_color_override("font_color", TEXT)
 	column.add_child(body)
@@ -218,7 +225,11 @@ func _physics_process(_delta: float) -> void:
 func _process(delta: float) -> void:
 	notice_time = maxf(0, notice_time - delta)
 	notice_label.visible = notice_time > 0
-	habitat.queue_redraw()
+	if selected_id >= 0 and selected_id < sim.ants.size():
+		inspection = sim.sense_for(sim.ants[selected_id], true)
+	for view in habitats:
+		view.inspection = inspection
+		view.queue_redraw()
 	queue_redraw()
 	if not capture_path.is_empty() and not capturing and sim.elapsed >= capture_at:
 		capturing = true
@@ -238,7 +249,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_1: _select_tool(0)
 		KEY_2: _select_tool(1)
 		KEY_3: _select_tool(2)
-		KEY_0: habitat.reset_view()
+		KEY_4: _select_tool(3)
+		KEY_0: _fit_views()
 		KEY_R: _reset()
 		KEY_H: _toggle_help()
 		KEY_ESCAPE:
@@ -249,8 +261,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _select_tool(value: int) -> void:
 	tool = value
-	if habitat != null:
-		habitat.tool = value
+	for view in habitats:
+		view.tool = value
 	for i in range(tool_buttons.size()):
 		tool_buttons[i].set_pressed_no_signal(i == value)
 
@@ -276,28 +288,61 @@ func _notify(message: String) -> void:
 	notice_time = 3.0
 	notice_label.text = message
 
-func _on_habitat_click(point: Vector2, shift: bool) -> void:
+func _focus_view(location: int) -> void:
+	active_world = location
+
+func _select_ant(id: int) -> void:
+	selected_id = id
+	for view in habitats:
+		view.selected_id = id
+
+func _fit_views() -> void:
+	for view in habitats:
+		view.reset_view()
+
+func _set_layer(layer: String, enabled: bool) -> void:
+	for view in habitats:
+		view.set(layer, enabled)
+
+func _add_workers(amount: int) -> void:
+	var p: Vector2 = sim.worlds[active_world].portal + Vector2.DOWN * 40.0
+	var count: int = sim.add_ants(p, active_world, amount)
+	if count > 0:
+		_select_ant(sim.ants.size() - count)
+	_notify("Added %d worker%s · %s" % [count, "s" if count != 1 else "", Sim.LOCATION_NAMES[active_world]])
+
+func _on_habitat_click(point: Vector2, shift: bool, location: int = Sim.OUTDOORS) -> void:
+	active_world = location
+	var world = sim.worlds[location]
 	if tool == 1:
-		if sim.world.add_food(point):
-			_notify("Food placed · 120 units")
+		if world.add_food(point):
+			_notify("Food placed · 120 units · " + Sim.LOCATION_NAMES[location])
 		else:
 			_notify("Choose walkable ground")
-	elif tool == 2 and sim.world.is_open(point):
-		sim.trails.deposit(point, Field.Kind.HOME if shift else Field.Kind.FOOD, 3.0)
+	elif tool == 2 and world.is_open(point):
+		sim.fields[location].deposit(point, Field.Kind.HOME if shift else Field.Kind.FOOD, 3.0)
+	elif tool == 3:
+		var count: int = sim.add_ants(point, location, 10 if shift else 1)
+		if count > 0:
+			_select_ant(sim.ants.size() - count)
+			_notify("Added %d worker%s · %s" % [count, "s" if count != 1 else "", Sim.LOCATION_NAMES[location]])
+		else:
+			_notify("Choose walkable ground for the ant")
 
 func _reset() -> void:
 	sim = Sim.new()
-	habitat.sim = sim
-	selected_id = 36
-	habitat.selected_id = selected_id
+	inspection = {}
+	for view in habitats:
+		view.sim = sim
+	_select_ant(0)
 	# Reset controls without letting their callbacks overwrite the new defaults.
 	sliders.inner.max_value = 32.0
 	sliders.outer.set_value_no_signal(sim.outer_radius)
 	sliders.inner.set_value_no_signal(sim.inner_radius)
 	sliders.angle.set_value_no_signal(sim.view_angle)
 	sliders.turn.set_value_no_signal(sim.turn_rate)
-	sliders.decay.set_value_no_signal(sim.trails.half_life)
-	_notify("Colony reset · seed 1847")
+	sliders.decay.set_value_no_signal(sim.fields[0].half_life)
+	_notify("Colony reset · 10 workers · seed 1847")
 
 func _text(p: Vector2, text: String, font_size: int = 12, color: Color = TEXT, font: Font = null) -> void:
 	draw_string(regular if font == null else font, p, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
@@ -316,20 +361,27 @@ func _draw() -> void:
 	_text(Vector2(91, 61), "An ant colony, one small decision at a time.", 11, MUTED)
 	draw_circle(Vector2(1024, 43), 3, GREEN)
 	_text(Vector2(1036, 47), "DESKTOP LAB", 11, MUTED, mono)
-	_text(Vector2(1154, 47), "v0.1", 11, MUTED, mono)
+	_text(Vector2(1154, 47), "v0.2", 11, MUTED, mono)
 	_draw_stats()
 	_text(Vector2(88, 200), "HABITAT", 12, TEXT, bold)
-	_text(Vector2(166, 200), "/  SIDE CUTAWAY", 11, MUTED, mono)
+	_text(Vector2(166, 200), "/  LINKED WORLDS", 11, MUTED, mono)
 	var counts := sim.mode_counts()
 	_legend(Vector2(704, 196), GREEN, "Explore " + str(counts[0]))
 	_legend(Vector2(833, 196), AMBER, "Follow " + str(counts[1]))
 	_legend(Vector2(947, 196), BLUE, "Return " + str(counts[2]))
-	_panel(Rect2(84, 214, 1022, 616), Color("253226"), 6)
-	# Habitat is a child control, drawn over this backing.
+	var populations := sim.world_counts()
+	for location in [Sim.OUTDOORS, Sim.COLONY]:
+		var x: float = 84 + 518 * location
+		var accent: Color = GREEN if location == Sim.OUTDOORS else AMBER
+		draw_style_box(_style(PANEL, accent.darkened(0.25) if location == active_world else LINE, 14), Rect2(x, 214, 504, 616))
+		draw_circle(Vector2(x + 19, 231), 3, accent)
+		_text(Vector2(x + 30, 235), Sim.LOCATION_NAMES[location].to_upper(), 11, TEXT, bold)
+		_text(Vector2(x + 164, 235), "%d workers" % populations[location], 10, MUTED, mono)
+		_text(Vector2(x + 331, 235), "LINKED ENTRANCE", 9, accent, mono)
 	_draw_toolbar()
 	_draw_inspector()
-	_text(Vector2(593, 862), str(roundi(habitat.zoom * 100)) + "%", 11, MUTED, mono)
-	var instructions: String = ["Click a worker to inspect", "Click walkable ground to place food", "Drag to lay food scent · Shift for home scent"][tool]
+	_text(Vector2(590, 862), Sim.LOCATION_NAMES[active_world].to_upper() + "  " + str(roundi(habitats[active_world].zoom * 100)) + "%", 10, MUTED, mono)
+	var instructions: String = ["Click a worker in either map to inspect", "Click walkable ground in either map to place food", "Drag to lay food scent · Shift for home scent", "Click to place an ant · Shift-click for ten"][tool]
 	_text(Vector2(88, 894), instructions + "   ·   Wheel to zoom / middle-drag to pan", 10, MUTED)
 	draw_circle(Vector2(1146, 864), 3, GREEN if not paused else AMBER)
 	_text(Vector2(1158, 868), "PAUSED" if paused else "SIMULATION LIVE", 10, MUTED, mono)
@@ -368,8 +420,8 @@ func _legend(pos: Vector2, color: Color, label: String) -> void:
 
 func _draw_toolbar() -> void:
 	_text(Vector2(20, 198), "TOOLS", 9, MUTED, mono)
-	for i in range(3):
-		_text(Vector2(14, 288 + i * 62), ["INSPECT", "FOOD", "SCENT"][i], 8, GREEN if i == tool else MUTED, mono)
+	for i in range(4):
+		_text(Vector2(14, 288 + i * 62), ["INSPECT", "FOOD", "SCENT", "ANTS"][i], 8, GREEN if i == tool else MUTED, mono)
 	_text(Vector2(23, 853), "2D", 11, MUTED, mono)
 	draw_line(Vector2(23, 819), Vector2(49, 819), LINE, 1)
 
@@ -381,16 +433,17 @@ func _draw_inspector() -> void:
 	var mode_color: Color = [GREEN, AMBER, BLUE][ant.mode]
 	draw_circle(Vector2(1150, 183), 3, mode_color)
 	_text(Vector2(1160, 187), Sim.MODE_NAMES[ant.mode], 11, mode_color)
+	_text(Vector2(1146, 208), Sim.LOCATION_NAMES[ant.world_id].to_upper(), 9, MUTED, mono)
 	_draw_large_ant(Vector2(1259, 242), mode_color, ant.carrying)
 	_text(Vector2(1146, 288), "SPEED", 9, MUTED, mono)
 	_text(Vector2(1274, 288), "SENSED POINTS", 9, MUTED, mono)
 	_text(Vector2(1146, 309), "%.1f" % ant.velocity.length() + " u/s", 15, TEXT, mono)
-	_text(Vector2(1274, 309), str(ant.sense_count), 15, TEXT, mono)
-	_text(Vector2(1146, 337), "x %04d   y %04d" % [roundi(ant.position.x), roundi(ant.position.y)], 10, MUTED, mono)
+	_text(Vector2(1274, 309), str(int(inspection.get("count", 0))), 15, TEXT, mono)
+	_text(Vector2(1146, 337), "x %03d  y %03d  |  hole %d" % [roundi(ant.position.x), roundi(ant.position.y), int(inspection.get("portal_count", 0))], 10, MUTED, mono)
 	draw_line(Vector2(1146, 357), Vector2(1384, 357), LINE, 1)
 	_text(Vector2(1146, 383), "MOVEMENT & SENSING", 10, TEXT, bold)
 	var labels := ["Outer sensing radius", "Inner exclusion radius", "Forward sensing angle", "Maximum turn rate", "Pheromone half-life"]
-	var values := [str(roundi(sim.outer_radius)) + " u", str(roundi(sim.inner_radius)) + " u", str(roundi(sim.view_angle)) + "°", str(roundi(sim.turn_rate)) + "°/s", str(roundi(sim.trails.half_life)) + " s"]
+	var values := [str(roundi(sim.outer_radius)) + " u", str(roundi(sim.inner_radius)) + " u", str(roundi(sim.view_angle)) + "°", str(roundi(sim.turn_rate)) + "°/s", str(roundi(sim.fields[0].half_life)) + " s"]
 	for i in range(5):
 		var y: float = 408 + i * 58
 		_text(Vector2(1147, y), labels[i], 11, MUTED)
@@ -398,7 +451,7 @@ func _draw_inspector() -> void:
 		_text(Vector2(1383 - width, y), values[i], 11, GREEN, mono)
 	draw_line(Vector2(1146, 698), Vector2(1384, 698), LINE, 1)
 	_text(Vector2(1146, 719), "VISIBLE LAYERS", 10, TEXT, bold)
-	_text(Vector2(1147, 809), "Scent is blocked by solid ground.", 10, MUTED)
+	_text(Vector2(1147, 809), "Walls block scent. The entrance links it.", 10, MUTED)
 
 func _draw_large_ant(center: Vector2, color: Color, carrying: bool) -> void:
 	for i in range(3):

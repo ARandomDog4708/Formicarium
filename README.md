@@ -1,9 +1,10 @@
 # Formicarium
 
 A native **2D desktop ant colony simulator**, made with Godot 4.6 and typed
-GDScript. The side cutaway shows an outdoor foraging corridor, the entrance,
-four chambers and connecting tunnels. Every open map cell is walkable in any
-direction. Solid ground blocks movement and pheromone attraction.
+GDScript. Two separate maps are visible side by side: flat, top-down outdoor
+land on the left and a rounded colony interior on the right. The mound in
+the grass links to the entrance at the upper left of the colony. Every open
+area is walkable in any direction; walls block movement and pheromone sensing.
 
 ![Simulator preview](docs/preview.png)
 
@@ -30,6 +31,13 @@ The simulation and application source files are directly editable in this
 repository. To open the project in the Godot editor, install the standard
 Godot 4.6+ editor, import **project.godot**, and press **F5**.
 
+## Update an existing clone
+
+Close the running simulator, open PowerShell in your repository folder, then:
+
+    git pull --ff-only
+    .\run.cmd
+
 ## Linux and macOS
 
 Install the standard [Godot 4.6+ editor](https://godotengine.org/download/).
@@ -48,20 +56,51 @@ plugins, or other packages are needed.
 | N / Step | One 1/60-second simulation step while paused |
 | 1 / Inspect | Click a worker to select it |
 | 2 / Food | Click walkable space to add 120 food units |
-| 3 / Scent | Click or drag to paint food pheromone |
+| 3 / Scent | Click or drag to paint food pheromone in either map |
+| 4 / Ants | Click walkable space to add one worker |
+| Shift + ant placement | Add ten workers at the clicked location |
+| +10 above the maps | Add ten workers near the entrance in the active map |
 | Shift + scent brush | Paint home pheromone |
 | Mouse wheel | Zoom around the pointer |
 | Middle mouse drag | Pan |
-| 0 / Fit | Fit the habitat |
+| 0 / Fit | Fit both maps |
 | R / Reset colony | Restart the same seeded colony |
 | H / ? | Controls guide |
 | Escape | Close guide / return to inspection |
 
+Start with **10 workers**. Select the Ants tool (4) to place more in either
+map; Shift-click places ten. Reset restores the original ten. Each map has
+its own zoom and pan. The bottom zoom buttons control the most recently
+clicked map. Inspection follows the same worker as it travels between maps.
+
 Use 1×, 2× and 4× to change the number of fixed simulation steps, independently
 of the display frame rate. The inspector adjusts both radii, the forward
 sensing angle, maximum turn rate and pheromone half-life. Layer switches
-affect drawing only. The selected worker's cone shows the sensing region;
-lines to pheromone samples show which points actually pass visibility checks.
+affect drawing only in both maps. Clear trails removes both fields. The
+selected worker's cone shows its sensing region, with lines to visible samples.
+A dashed line to the entrance and highlighted samples in the opposite map
+show pheromones being sensed through the hole. The inspector's "hole" count
+reports how many eligible samples are on the other side.
+
+## Linked maps and the entrance
+
+An ant entering the outdoor mound appears just below the colony's upper-left
+entrance, facing down into the tunnel. Going back through that entrance
+returns the same ant outdoors, heading back along its remembered surface
+approach. Identity, mode, carried food and chemical source distance persist.
+A short cooldown and exit offset prevent immediate bouncing between maps.
+Food is delivered inside the nest chamber, rather than at the outdoor mound.
+
+Pheromones stay in their own map and can be sensed through the hole. A remote
+sample contributes only when both legs are unobstructed: ant to local opening,
+and remote opening to sample. Its effective distance is the sum of those
+legs plus an 8-unit connector. That entire distance must be inside the same
+sensing ring. The ant must face the local opening, and the scent type must
+match its mode. The direction of attraction is toward the opening. Local and
+remote contributions are added before applying the speed cap.
+
+The connection models a small tunnel between two maps; no attraction is
+computed using the distance between the on-screen panels.
 
 ## The model
 
@@ -89,7 +128,8 @@ Workers pick up food on contact, turn around within the turn-rate limit, and
 carry one unit back to the nest. Deposits weaken with distance traveled from
 their source. Samples combine repeated deposits in an 8-unit grid and decay
 exponentially, with a default 32-second half-life. Food piles and the colony
-emit local beacons; those obey the same radius, cone and wall checks.
+emit local beacons; those obey the same radius, cone and wall checks. The
+outdoor entrance also emits a local home beacon marking the nest location.
 
 Exploration is an explicit state. After delivery, a worker explores for three
 seconds before reacquiring a food trail. A trail followed for 40 seconds
@@ -111,17 +151,21 @@ their foraging.
 
 ### Initial conditions
 
-84 workers begin distributed through the nest, entrance and a small surface
-patrol. Pheromone trails start empty. Two food piles hold 440 units total.
-The random seed is 1847. Reset restarts this same setup.
+Ten workers begin around the outdoor mound. Some initially face the entrance;
+the others explore the flat land. Pheromone trails start empty. Two outdoor
+food piles hold 440 units total. The random seed is 1847. Reset recreates this
+same setup, including removing manually added ants and food.
 
 ## Source layout
 
-- simulation/world.gd: binary occupancy, collision, supercover visibility,
-  initial habitat and food sources.
-- simulation/pheromones.gd: channel storage, deposition, decay and attraction.
-- simulation/simulation.gd: ant states, mode transitions and fixed-step motion.
-- app/habitat.gd: terrain, ants, pheromone overlays, zoom and habitat input.
+- simulation/world.gd: independent outdoor and colony maps, curved tunnel
+  geometry, a 2-unit collision/visibility mask, and food sources.
+- simulation/pheromones.gd: per-map chemical fields, deposition, decay, local
+  attraction and wall-checked sensing through the entrance.
+- simulation/simulation.gd: ant states, manual spawning, entrance transfers,
+  mode transitions and fixed-step motion across both maps.
+- app/habitat.gd: one map viewport, rounded terrain and tunnels, ants, overlays,
+  independent zoom/pan and map-specific placement tools.
 - app/main.gd: native controls and inspection panel.
 - tests/run_tests.gd: headless model checks and a three-minute colony run.
 
@@ -134,13 +178,17 @@ Run ./run-tests.sh, or:
     godot --headless --path . --script res://tests/run_tests.gd
     godot --headless --path . --script res://tests/app_smoke.gd
 
-Checks cover the attraction equation, speed cap, inner and outer radii,
+Checks cover the ten-ant starting population, manual additions, stable worker
+identity across transfers, entrance cooldown, two-way scent transmission,
+visibility on both sides of the hole, connected galleries, rounded boundaries,
+the attraction equation, speed cap, inner and outer radii,
 forward angle, channel selection, zero-distance samples, wall occlusion,
 diagonal corners, half-life decay, Euler motion, turn-rate limits, seeded
 repeatability, food conservation and autonomous pickup/delivery. A three-minute
 simulation also checks that ants remain in walkable space with finite state.
-Application checks exercise pause/step, parameter controls, food placement,
-both pheromone brush channels, zoom, reset and the controls guide.
+Application checks exercise pause/step, both map views, shared selection,
+parameter controls, food placement, both pheromone brush channels, ant
+placement and batches, independent zoom, reset and the controls guide.
 
 ## Export
 

@@ -4,11 +4,18 @@ extends RefCounted
 const WorldData = preload("res://simulation/world.gd")
 const Field = preload("res://simulation/pheromones.gd")
 const FIXED_DT: float = 1.0 / 60.0
+const OUTDOORS: int = WorldData.Kind.OUTDOORS
+const COLONY: int = WorldData.Kind.COLONY
+const LINK_LENGTH: float = 8.0
+const LOCATION_NAMES = ["Outdoors", "Colony"]
 enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_HOME }
 const MODE_NAMES = ["Exploring", "Following food", "Returning home"]
 
 class Ant extends RefCounted:
 	var id: int
+	var world_id: int = OUTDOORS
+	var portal_cooldown: float = 0.0
+	var surface_exit_heading: float = 0.0
 	var position := Vector2.ZERO
 	var heading: float = 0.0
 	var velocity := Vector2.ZERO
@@ -29,8 +36,10 @@ class Ant extends RefCounted:
 	var following_time: float = 0.0
 	var explore_time: float = 0.0
 
-var world: WorldData
-var trails: Field
+var worlds: Array[WorldData] = []
+var fields: Array[Field] = []
+var transfers: int = 0
+var last_transfer_time: float = -100.0
 var ants: Array[Ant] = []
 var rng := RandomNumberGenerator.new()
 var elapsed: float = 0.0
@@ -46,35 +55,100 @@ var field_clock: float = 0.0
 var source_clock: float = 0.0
 var seed_value: int = 1847
 
-func _init(population: int = 84, colony_seed: int = 1847) -> void:
+func _init(population: int = 10, colony_seed: int = 1847) -> void:
 	seed_value = colony_seed
 	rng.seed = colony_seed
-	world = WorldData.new()
-	trails = Field.new(world)
+	for location in [OUTDOORS, COLONY]:
+		var map := WorldData.new(location)
+		worlds.append(map)
+		fields.append(Field.new(map))
+	# Ten workers start around the mound; some face the entrance, others explore.
 	for i in range(population):
-		var ant := Ant.new()
-		ant.id = i
-		ant.heading = rng.randf_range(-PI, PI)
-		ant.turn_side = 1.0 if rng.randf() > 0.5 else -1.0
-		ant.sense_clock = rng.randf_range(0, 0.12)
-		ant.deposit_clock = rng.randf_range(0, 0.16)
-		ant.wander_clock = rng.randf_range(0, 0.7)
-		ant.explore_time = rng.randf_range(0, 3.0)
-		# An established colony: workers occupy the nest and its entrance.
-		# A small initial patrol is already on the surface; no trails are seeded.
-		if i < 12:
-			var px: float = 360.0 + float(i) * 27.0
-			ant.position = Vector2(px, WorldData.surface_y(px) - 12.0)
-			ant.heading = 0.0 if i % 2 == 0 else PI
-		elif i < 30:
-			var t: float = float(i - 12) / 18.0
-			ant.position = Vector2(532, 197).lerp(Vector2(467, 291), t)
-			ant.heading = -PI / 2.0
-		else:
-			ant.position = world.home + Vector2(rng.randf_range(-60, 60), rng.randf_range(-31, 31))
-		if not world.fits(ant.position):
-			ant.position = world.home
-		ants.append(ant)
+		var angle: float = float(i) * TAU / maxf(1.0, population)
+		var p := worlds[OUTDOORS].portal + Vector2.from_angle(angle) * (38.0 + (i % 3) * 8.0)
+		var ant := add_ant(p, OUTDOORS)
+		if ant != null:
+			ant.heading = wrapf(angle + (PI if i % 3 == 0 else 0.0), -PI, PI)
+
+func add_ant(p: Vector2, world_id: int = OUTDOORS) -> Ant:
+	if world_id < OUTDOORS or world_id > COLONY or not worlds[world_id].fits(p):
+		return null
+	var ant := Ant.new()
+	ant.id = ants.size()
+	ant.world_id = world_id
+	ant.position = p
+	ant.heading = rng.randf_range(-PI, PI)
+	ant.surface_exit_heading = rng.randf_range(-PI, PI)
+	ant.turn_side = 1.0 if rng.randf() > 0.5 else -1.0
+	ant.sense_clock = rng.randf_range(0, 0.12)
+	ant.deposit_clock = rng.randf_range(0, 0.16)
+	ant.wander_clock = rng.randf_range(0, 0.7)
+	ant.explore_time = rng.randf_range(0, 3.0)
+	ant.source_distance = p.distance_to(worlds[COLONY].home) if world_id == COLONY else p.distance_to(worlds[OUTDOORS].portal) + 100.0
+	ants.append(ant)
+	return ant
+
+func add_ants(p: Vector2, world_id: int, amount: int = 1) -> int:
+	if world_id < OUTDOORS or world_id > COLONY or not worlds[world_id].fits(p):
+		return 0
+	var added: int = 0
+	for i in range(amount):
+		var candidate := p
+		if i > 0:
+			var nearby := p + Vector2.from_angle(rng.randf_range(0, TAU)) * rng.randf_range(3, 12)
+			if worlds[world_id].fits(nearby):
+				candidate = nearby
+		if add_ant(candidate, world_id) != null:
+			added += 1
+	return added
+
+func world_counts() -> Array[int]:
+	var counts: Array[int] = [0, 0]
+	for ant in ants:
+		counts[ant.world_id] += 1
+	return counts
+
+func clear_trails() -> void:
+	for field in fields:
+		field.clear()
+
+func set_half_life(value: float) -> void:
+	for field in fields:
+		field.half_life = value
+
+func sense_for(ant: Ant, collect: bool = false) -> Dictionary:
+	var empty := {"force": Vector2.ZERO, "count": 0, "visible": PackedVector2Array(), "remote_visible": PackedVector2Array(), "portal_count": 0}
+	if ant.mode == Mode.EXPLORE and ant.explore_time > 0:
+		return empty
+	var kind: int = Field.Kind.HOME if ant.mode == Mode.RETURN_HOME else Field.Kind.FOOD
+	var half: float = deg_to_rad(view_angle * 0.5)
+	var local: Dictionary = fields[ant.world_id].sense(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, collect)
+	var remote: Dictionary = fields[ant.world_id].sense_through_portal(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, worlds[ant.world_id].portal, fields[1 - ant.world_id], LINK_LENGTH, collect)
+	var combined: Vector2 = local.raw_force + remote.raw_force
+	return {"force": combined.limit_length(speed), "count": local.count + remote.count, "visible": local.visible, "remote_visible": remote.visible, "portal_count": remote.count}
+
+func _try_transfer(ant: Ant) -> bool:
+	if ant.portal_cooldown > 0 or ant.position.distance_to(worlds[ant.world_id].portal) > WorldData.PORTAL_RADIUS:
+		return false
+	if ant.world_id == OUTDOORS:
+		ant.surface_exit_heading = wrapf(ant.heading + PI, -PI, PI)
+		ant.world_id = COLONY
+		ant.heading = PI * 0.5
+		ant.position = worlds[COLONY].portal + Vector2.DOWN * (WorldData.PORTAL_RADIUS + 8.0)
+	else:
+		ant.world_id = OUTDOORS
+		ant.heading = ant.surface_exit_heading
+		ant.position = worlds[OUTDOORS].portal + Vector2.from_angle(ant.heading) * (WorldData.PORTAL_RADIUS + 8.0)
+	ant.velocity = Vector2.from_angle(ant.heading) * ant.velocity.length()
+	ant.portal_cooldown = 0.8
+	ant.source_distance += LINK_LENGTH
+	ant.force = Vector2.ZERO
+	ant.sense_count = 0
+	ant.sense_clock = 0.12
+	ant.reverse_time = 0.0
+	transfers += 1
+	last_transfer_time = elapsed
+	return true
 
 func mode_counts() -> Array[int]:
 	var counts: Array[int] = [0, 0, 0]
@@ -86,19 +160,23 @@ func step(dt: float = FIXED_DT) -> void:
 	elapsed += dt
 	field_clock += dt
 	if field_clock >= 0.1:
-		trails.decay(field_clock)
+		for field in fields:
+			field.decay(field_clock)
 		field_clock = 0.0
 	source_clock += dt
 	if source_clock >= 0.3:
-		# Only local beacons, subject to exactly the same cone and wall checks.
-		trails.deposit(world.home, Field.Kind.HOME, 4.0)
-		for food in world.foods:
-			if food.amount > 0:
-				trails.deposit(food.position, Field.Kind.FOOD, 4.0)
+		# Nest odor at the surface entrance is a local beacon, not global steering.
+		fields[OUTDOORS].deposit(worlds[OUTDOORS].portal, Field.Kind.HOME, 3.0)
+		fields[COLONY].deposit(worlds[COLONY].home, Field.Kind.HOME, 4.0)
+		for world_id in [OUTDOORS, COLONY]:
+			for food in worlds[world_id].foods:
+				if food.amount > 0:
+					fields[world_id].deposit(food.position, Field.Kind.FOOD, 4.0)
 		source_clock = 0.0
 	# All ants sense the same field before this tick's deposits are applied.
 	for ant in ants:
 		ant.age += dt
+		ant.portal_cooldown = maxf(0, ant.portal_cooldown - dt)
 		ant.explore_time = maxf(0, ant.explore_time - dt)
 		if ant.mode == Mode.FOLLOW_FOOD:
 			ant.following_time += dt
@@ -121,16 +199,11 @@ func step(dt: float = FIXED_DT) -> void:
 		if ant.deposit_clock >= 0.16:
 			var kind: int = Field.Kind.FOOD if ant.carrying else Field.Kind.HOME
 			var strength: float = maxf(0.045, 1.5 * exp(-ant.source_distance / 220.0))
-			trails.deposit(ant.position, kind, strength)
+			fields[ant.world_id].deposit(ant.position, kind, strength)
 			ant.deposit_clock = 0.0
 
 func _sense(ant: Ant) -> void:
-	if ant.mode == Mode.EXPLORE and ant.explore_time > 0:
-		ant.force = Vector2.ZERO
-		ant.sense_count = 0
-		return
-	var kind: int = Field.Kind.HOME if ant.mode == Mode.RETURN_HOME else Field.Kind.FOOD
-	var sensed: Dictionary = trails.sense(ant.position, ant.heading, kind, inner_radius, outer_radius, deg_to_rad(view_angle * 0.5), speed, falloff)
+	var sensed: Dictionary = sense_for(ant)
 	ant.force = sensed.force
 	ant.sense_count = sensed.count
 	if ant.mode == Mode.EXPLORE and ant.sense_count > 0:
@@ -146,6 +219,7 @@ static func turn_toward(current: float, target: float, max_change: float) -> flo
 	return wrapf(current + clampf(angle_difference(current, target), -max_change, max_change), -PI, PI)
 
 func _move(ant: Ant, dt: float) -> void:
+	var world: WorldData = worlds[ant.world_id]
 	ant.wander_clock -= dt
 	if ant.wander_clock <= 0:
 		ant.wander_clock = rng.randf_range(0.25, 0.8)
@@ -176,10 +250,12 @@ func _move(ant: Ant, dt: float) -> void:
 		ant.source_distance += velocity.length() * dt
 	else:
 		ant.velocity = Vector2.ZERO
-	if not ant.carrying and ant.position.distance_to(world.home) < 23.0:
+	if ant.world_id == COLONY and not ant.carrying and ant.position.distance_to(world.home) < 23.0:
 		ant.source_distance = 0.0
+	_try_transfer(ant)
 
 func _avoid_wall(ant: Ant, target: float) -> float:
+	var world: WorldData = worlds[ant.world_id]
 	var look: float = 13.0
 	var ahead := ant.position + Vector2.from_angle(target) * look
 	if world.fits(ahead) and world.line_clear(ant.position, ahead):
@@ -206,8 +282,9 @@ func _reverse(ant: Ant) -> void:
 	ant.sense_count = 0
 
 func _interact(ant: Ant) -> void:
+	var world: WorldData = worlds[ant.world_id]
 	if ant.carrying:
-		if ant.position.distance_to(world.home) < 25.0:
+		if ant.world_id == COLONY and ant.position.distance_to(world.home) < 25.0:
 			delivered += 1
 			ant.carrying = false
 			ant.mode = Mode.EXPLORE
