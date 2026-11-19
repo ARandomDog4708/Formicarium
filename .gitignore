@@ -1,0 +1,8 @@
+.godot/
+builds/
+*.log
+/.runtime/
+/preview.png
+/preview.png.import
+.DS_Store
+Thumbs.db
