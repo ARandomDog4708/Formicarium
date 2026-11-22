@@ -2,7 +2,7 @@
 
 A native **2D desktop ant colony simulator**, made with Godot 4.6 and typed
 GDScript. Two separate maps are visible side by side: flat, top-down outdoor
-land on the left and a rounded colony interior on the right. The mound in
+land on the left and one rounded colony chamber on the right. The mound in
 the grass links to the entrance at the upper left of the colony. Every open
 area is walkable in any direction; walls block movement and pheromone sensing.
 
@@ -35,7 +35,7 @@ Godot 4.6+ editor, import **project.godot**, and press **F5**.
 
 Close the running simulator, open PowerShell in your repository folder, then:
 
-    git pull --ff-only
+    git pull
     .\run.cmd
 
 ## Linux and macOS
@@ -75,8 +75,8 @@ clicked map. Inspection follows the same worker as it travels between maps.
 
 Use 1×, 2× and 4× to change the number of fixed simulation steps, independently
 of the display frame rate. The inspector adjusts both radii, the forward
-sensing angle, maximum turn rate and pheromone half-life. Layer switches
-affect drawing only in both maps. Clear trails removes both fields. The
+sensing angle, maximum turn rate, pheromone half-life and hunger settings.
+Layer switches affect drawing only in both maps. Clear trails removes both fields. The
 selected worker's cone shows its sensing region, with lines to visible samples.
 A dashed line to the entrance and highlighted samples in the opposite map
 show pheromones being sensed through the hole. The inspector's "hole" count
@@ -87,7 +87,7 @@ reports how many eligible samples are on the other side.
 An ant entering the outdoor mound appears just below the colony's upper-left
 entrance, facing down into the tunnel. Going back through that entrance
 returns the same ant outdoors, heading back along its remembered surface
-approach. Identity, mode, carried food and chemical source distance persist.
+approach. Identity, mode, hunger, carried food and chemical source distance persist.
 A short cooldown and exit offset prevent immediate bouncing between maps.
 The mound is an entrance and a source of return pheromone. Food stays with a
 carrying worker until it reaches the storage chamber inside the colony.
@@ -105,9 +105,10 @@ computed using the distance between the on-screen panels.
 
 ## Food storage and returning workers
 
-The first underground chamber is **FOOD STORAGE**. It starts empty and displays
-a pile that grows as workers unload, along with its exact unit count. The
-**FOOD STORED** counter above the maps reads this same stockpile.
+The colony has a single rounded chamber and a short entrance tunnel. Its
+**FOOD STORAGE** area starts empty and displays a pile representing the food
+remaining, along with an exact unit count. The **FOOD STORED** counter above
+the maps reads this same stockpile.
 
 Picking up one food unit immediately switches a worker to **Returning food**.
 It follows home/return pheromone toward the anthill while outdoors. After
@@ -118,10 +119,44 @@ still works in both directions for foragers.
 
 A delivery requires being within 25 world units of storage with a clear line
 of sight. Reaching either entrance alone does not unload food. After delivery,
-the worker becomes empty-handed and explores again. Stored provisions are
-separate from forageable food piles and do not emit a food-source beacon, so
-workers do not pick their deliveries straight back up. Clear trails preserves
-stored food; Reset colony empties storage and restores the initial ten ants.
+the worker becomes empty-handed and explores again, eating first if hungry.
+Stored provisions are separate from forageable food piles and do not emit a
+food-source beacon, so
+foragers do not pick their deliveries straight back up. Hungry workers eat
+from storage instead. Clear trails preserves stored food; Reset colony empties
+storage and restores the initial ten ants.
+
+## Hunger
+
+Every worker has its own hunger meter: **0% is fed and 100% is fully hungry**.
+A small bar above each ant shows its hunger. Select a worker to see its exact
+percentage and a larger meter with a mark at the return threshold.
+
+Two controls in the inspector apply to all workers immediately:
+
+| Setting | Meaning | Default | Range |
+| --- | --- | --- | --- |
+| Time to 100% hunger | Simulation seconds for the meter to fill from 0% | 180 s | 30–600 s |
+| Return to eat at | Hunger percentage that triggers a meal trip | 65% | 10–100% |
+
+At the default settings, a fed worker becomes hungry enough to return after
+117 simulated seconds. Hunger increases by `100 * dt / hunger_time`, capped
+at 100%. Pause holds the meter, single-step advances it once, and the speed
+buttons advance hunger with the rest of the simulation. Changing the fill
+time changes the rate without resetting existing hunger. Newly added ants
+start fed; Reset restores fed workers and the default hunger settings.
+
+At the threshold, an empty-handed worker switches to **Returning to eat**.
+It follows the same entrance and indoor storage pheromones as a food carrier,
+using the same range, cone, wall checks, turn limits and attraction equation.
+Eating consumes one stored unit, resets that ant's hunger to 0%, and resumes
+exploration. A worker carrying food finishes unloading before eating.
+
+If storage is empty, the worker keeps its hunger and resumes foraging for
+30 seconds before trying another meal trip. It can also collect food on the
+way home, deliver it, and eat the unit it brought back. This allows the colony
+to replenish an empty store. Stored food, lifetime deliveries and consumed
+meals are tracked separately, so food remains conserved after workers eat.
 
 ## The model
 
@@ -144,6 +179,7 @@ The two channels share the exact same equation:
 | Explore | Persistent wandering; can detect food trails | Home |
 | Follow food | Food | Home |
 | Returning food | Home/return: entrance outdoors, storage indoors | Food |
+| Returning to eat | Home/return: entrance outdoors, storage indoors | Home |
 
 Workers pick up food on contact, turn around within the turn-rate limit, and
 carry one unit back to storage. Deposits weaken with distance traveled from
@@ -174,8 +210,9 @@ their foraging.
 
 Ten workers begin around the outdoor mound. Some initially face the entrance;
 the others explore the flat land. Pheromone trails start empty. Two outdoor
-food piles hold 440 units total. The random seed is 1847. Reset recreates this
-same setup, including emptying storage and removing manually added ants and food.
+food piles hold 440 units total. All workers start fed. The random seed is
+1847. Reset recreates this same setup, including emptying storage and removing
+manually added ants and food.
 
 ## Source layout
 
@@ -183,8 +220,8 @@ same setup, including emptying storage and removing manually added ants and food
   geometry, a 2-unit collision/visibility mask, food sources and food storage.
 - simulation/pheromones.gd: per-map chemical fields, deposition, decay, local
   attraction and wall-checked sensing through the entrance.
-- simulation/simulation.gd: ant states, manual spawning, entrance transfers,
-  mode transitions and fixed-step motion across both maps.
+- simulation/simulation.gd: ant states, hunger and meals, manual spawning,
+  entrance transfers, mode transitions and fixed-step motion across both maps.
 - app/habitat.gd: one map viewport, rounded terrain and tunnels, ants, overlays,
   independent zoom/pan and map-specific placement tools.
 - app/main.gd: native controls and inspection panel.
@@ -201,7 +238,7 @@ Run ./run-tests.sh, or:
 
 Checks cover the ten-ant starting population, manual additions, stable worker
 identity across transfers, entrance cooldown, two-way scent transmission,
-visibility on both sides of the hole, connected galleries, rounded boundaries,
+visibility on both sides of the hole, a connected single chamber, rounded boundaries,
 the attraction equation, speed cap, inner and outer radii,
 forward angle, channel selection, zero-distance samples, wall occlusion,
 diagonal corners, half-life decay, Euler motion, turn-rate limits, seeded
@@ -210,9 +247,13 @@ simulation also checks that ants remain in walkable space with finite state.
 Storage checks cover the complete pickup-to-stockpile journey, indoor/outdoor
 return scent selection, blocked deliveries, exact inventory changes and
 preventing stored provisions from being reharvested.
+Hunger checks cover fill time, threshold changes, the full return-to-eat trip,
+consuming the last stored unit, empty-storage recovery, carrying food while
+hungry, walls blocking meals and conservation including consumed food.
 Application checks exercise pause/step, both map views, shared selection,
 parameter controls, food placement, both pheromone brush channels, ant
-placement and batches, independent zoom, reset and the controls guide.
+placement and batches, independent zoom, both hunger sliders, hunger during
+pause and step, reset and the controls guide.
 
 ## Export
 

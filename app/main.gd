@@ -10,6 +10,7 @@ const MUTED := Color("899b88")
 const GREEN := Color("b9d695")
 const BLUE := Color("85bed0")
 const AMBER := Color("e9ae67")
+const HUNGER := Color("d99e85")
 
 var sim: Sim
 var habitats: Array[Habitat] = []
@@ -144,14 +145,16 @@ func _build_controls() -> void:
 	_button("−", Rect2(931, 840, 34, 34), func(): habitats[active_world].zoom_by(1.0 / 1.2), "Zoom out [mouse wheel]")
 	_button("+", Rect2(971, 840, 34, 34), func(): habitats[active_world].zoom_by(1.2), "Zoom in [mouse wheel]")
 	_button("Fit", Rect2(1013, 840, 88, 34), _fit_views, "Reset zoom and pan [0]")
-	_slider("outer", 414, 36, 140, sim.outer_radius, 1, func(v: float):
+	_slider("outer", 424, 36, 140, sim.outer_radius, 1, func(v: float):
 		sim.outer_radius = v
 		sliders.inner.max_value = minf(32, v - 8)
 		sim.inner_radius = sliders.inner.value)
-	_slider("inner", 472, 2, 32, sim.inner_radius, 1, func(v: float): sim.inner_radius = v)
-	_slider("angle", 530, 45, 180, sim.view_angle, 5, func(v: float): sim.view_angle = v)
-	_slider("turn", 588, 90, 1080, sim.turn_rate, 30, func(v: float): sim.turn_rate = v)
-	_slider("decay", 646, 8, 90, sim.fields[0].half_life, 1, func(v: float): sim.set_half_life(v))
+	_slider("inner", 462, 2, 32, sim.inner_radius, 1, func(v: float): sim.inner_radius = v)
+	_slider("angle", 500, 45, 180, sim.view_angle, 5, func(v: float): sim.view_angle = v)
+	_slider("turn", 538, 90, 1080, sim.turn_rate, 30, func(v: float): sim.turn_rate = v)
+	_slider("decay", 576, 8, 90, sim.fields[0].half_life, 1, func(v: float): sim.set_half_life(v))
+	_slider("hunger_time", 614, 30, 600, sim.hunger_time, 5, func(v: float): sim.hunger_time = v)
+	_slider("hunger_threshold", 652, 10, 100, sim.hunger_threshold, 1, func(v: float): sim.hunger_threshold = v)
 	_check("Home trails", Vector2(1145, 725), true, func(v: bool): _set_layer("show_home", v))
 	_check("Food trails", Vector2(1275, 725), true, func(v: bool): _set_layer("show_food", v))
 	_check("Selected ant's sensing cone", Vector2(1145, 760), true, func(v: bool): _set_layer("show_sensors", v))
@@ -175,7 +178,7 @@ func _slider(key: String, y: float, minimum: float, maximum: float, value: float
 	slider.step = increment
 	slider.value = value
 	slider.value_changed.connect(action)
-	slider.tooltip_text = {"outer": "Maximum sensing distance", "inner": "Pheromones this close exert no attraction", "angle": "Total forward sensing angle", "turn": "Maximum heading change in degrees per second", "decay": "Seconds until a pheromone loses half its strength"}[key]
+	slider.tooltip_text = {"outer": "Maximum sensing distance", "inner": "Pheromones this close exert no attraction", "angle": "Total forward sensing angle", "turn": "Maximum heading change in degrees per second", "decay": "Seconds until a pheromone loses half its strength", "hunger_time": "Simulation seconds from 0% fed to 100% hungry; applies to every ant", "hunger_threshold": "Hunger percentage that sends a worker back to eat one stored food unit"}[key]
 	sliders[key] = slider
 	add_child(slider)
 
@@ -207,7 +210,7 @@ func _build_help() -> void:
 	title.add_theme_font_size_override("font_size", 23)
 	column.add_child(title)
 	var body := Label.new()
-	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\n4              Place an ant (Shift: ten ants)\nShift         Paint home pheromone instead of food\nWheel      Zoom the map under the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nFood pickup switches a worker to Returning food.\nReturn scent leads to the mound, then underground storage.\nStored food stays in the colony; workers resume exploring."
+	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\n4              Place an ant (Shift: ten ants)\nShift         Paint home pheromone instead of food\nWheel      Zoom the map under the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nFood pickup switches a worker to Returning food.\nHungry workers return to eat one unit from storage.\nSet hunger fill time and the return threshold in the inspector."
 	body.add_theme_font_size_override("font_size", 13)
 	body.add_theme_color_override("font_color", TEXT)
 	column.add_child(body)
@@ -342,6 +345,8 @@ func _reset() -> void:
 	sliders.angle.set_value_no_signal(sim.view_angle)
 	sliders.turn.set_value_no_signal(sim.turn_rate)
 	sliders.decay.set_value_no_signal(sim.fields[0].half_life)
+	sliders.hunger_time.set_value_no_signal(sim.hunger_time)
+	sliders.hunger_threshold.set_value_no_signal(sim.hunger_threshold)
 	_notify("Colony reset · 10 workers · seed 1847")
 
 func _text(p: Vector2, text: String, font_size: int = 12, color: Color = TEXT, font: Font = null) -> void:
@@ -361,14 +366,15 @@ func _draw() -> void:
 	_text(Vector2(91, 61), "An ant colony, one small decision at a time.", 11, MUTED)
 	draw_circle(Vector2(1024, 43), 3, GREEN)
 	_text(Vector2(1036, 47), "DESKTOP LAB", 11, MUTED, mono)
-	_text(Vector2(1154, 47), "v0.3", 11, MUTED, mono)
+	_text(Vector2(1154, 47), "v0.4", 11, MUTED, mono)
 	_draw_stats()
 	_text(Vector2(88, 200), "HABITAT", 12, TEXT, bold)
 	_text(Vector2(166, 200), "/  LINKED WORLDS", 11, MUTED, mono)
 	var counts := sim.mode_counts()
-	_legend(Vector2(704, 196), GREEN, "Explore " + str(counts[0]))
-	_legend(Vector2(833, 196), AMBER, "Follow " + str(counts[1]))
-	_legend(Vector2(947, 196), BLUE, "Return " + str(counts[2]))
+	_legend(Vector2(610, 196), GREEN, "Explore " + str(counts[0]))
+	_legend(Vector2(734, 196), AMBER, "Follow " + str(counts[1]))
+	_legend(Vector2(858, 196), BLUE, "Return " + str(counts[2]))
+	_legend(Vector2(982, 196), HUNGER, "To eat " + str(counts[3]))
 	var populations := sim.world_counts()
 	for location in [Sim.OUTDOORS, Sim.COLONY]:
 		var x: float = 84 + 518 * location
@@ -400,7 +406,7 @@ func _draw_brand() -> void:
 func _draw_stats() -> void:
 	var counts := sim.mode_counts()
 	var titles := ["COLONY POPULATION", "FOOD STORED", "RETURNING WORKERS", "SIMULATION TIME"]
-	var values := [str(sim.ants.size()), str(sim.delivered), str(counts[2]), _clock(sim.elapsed)]
+	var values := [str(sim.ants.size()), str(sim.stored_food), str(counts[2] + counts[3]), _clock(sim.elapsed)]
 	for i in range(4):
 		var x: float = 88 + i * 258
 		_panel(Rect2(x, 100, 242, 73), PANEL, 8)
@@ -430,11 +436,11 @@ func _draw_inspector() -> void:
 	_text(Vector2(1146, 125), "WORKER INSPECTOR", 10, MUTED, mono)
 	var ant = sim.ants[selected_id]
 	_text(Vector2(1146, 161), "Ant %03d" % (ant.id + 1), 25, TEXT, bold)
-	var mode_color: Color = [GREEN, AMBER, BLUE][ant.mode]
+	var mode_color: Color = [GREEN, AMBER, BLUE, HUNGER][ant.mode]
 	draw_circle(Vector2(1150, 183), 3, mode_color)
 	_text(Vector2(1160, 187), Sim.MODE_NAMES[ant.mode], 11, mode_color)
 	var location: String = Sim.LOCATION_NAMES[ant.world_id].to_upper()
-	if ant.mode == Sim.Mode.RETURN_FOOD:
+	if Sim.is_returning(ant):
 		location += " · TO STORAGE" if ant.world_id == Sim.COLONY else " · TO ANTHILL"
 	_text(Vector2(1146, 208), location, 9, MUTED, mono)
 	_draw_large_ant(Vector2(1259, 242), mode_color, ant.carrying)
@@ -443,12 +449,21 @@ func _draw_inspector() -> void:
 	_text(Vector2(1146, 309), "%.1f" % ant.velocity.length() + " u/s", 15, TEXT, mono)
 	_text(Vector2(1274, 309), str(int(inspection.get("count", 0))), 15, TEXT, mono)
 	_text(Vector2(1146, 337), "x %03d  y %03d  |  hole %d" % [roundi(ant.position.x), roundi(ant.position.y), int(inspection.get("portal_count", 0))], 10, MUTED, mono)
-	draw_line(Vector2(1146, 357), Vector2(1384, 357), LINE, 1)
-	_text(Vector2(1146, 383), "MOVEMENT & SENSING", 10, TEXT, bold)
-	var labels := ["Outer sensing radius", "Inner exclusion radius", "Forward sensing angle", "Maximum turn rate", "Pheromone half-life"]
-	var values := [str(roundi(sim.outer_radius)) + " u", str(roundi(sim.inner_radius)) + " u", str(roundi(sim.view_angle)) + "°", str(roundi(sim.turn_rate)) + "°/s", str(roundi(sim.fields[0].half_life)) + " s"]
-	for i in range(5):
-		var y: float = 408 + i * 58
+	var hunger_color: Color = HUNGER if ant.hunger >= sim.hunger_threshold else GREEN
+	_text(Vector2(1146, 359), "HUNGER", 9, MUTED, mono)
+	var hunger_text: String = "%d%%" % roundi(ant.hunger)
+	var hunger_width: float = mono.get_string_size(hunger_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+	_text(Vector2(1383 - hunger_width, 359), hunger_text, 11, hunger_color, mono)
+	draw_style_box(_style(Color("344537"), Color.TRANSPARENT, 3), Rect2(1147, 367, 236, 7))
+	if ant.hunger > 0:
+		draw_style_box(_style(hunger_color, Color.TRANSPARENT, 3), Rect2(1147, 367, 236 * ant.hunger / 100.0, 7))
+	var threshold_x: float = 1147 + 236 * sim.hunger_threshold / 100.0
+	draw_line(Vector2(threshold_x, 364), Vector2(threshold_x, 377), TEXT, 1)
+	_text(Vector2(1146, 400), "MOVEMENT, SCENT & HUNGER", 10, TEXT, bold)
+	var labels := ["Outer sensing radius", "Inner exclusion radius", "Forward sensing angle", "Maximum turn rate", "Pheromone half-life", "Time to 100% hunger", "Return to eat at"]
+	var values := [str(roundi(sim.outer_radius)) + " u", str(roundi(sim.inner_radius)) + " u", str(roundi(sim.view_angle)) + "°", str(roundi(sim.turn_rate)) + "°/s", str(roundi(sim.fields[0].half_life)) + " s", str(roundi(sim.hunger_time)) + " s", str(roundi(sim.hunger_threshold)) + "%"]
+	for i in range(7):
+		var y: float = 418 + i * 38
 		_text(Vector2(1147, y), labels[i], 11, MUTED)
 		var width: float = mono.get_string_size(values[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
 		_text(Vector2(1383 - width, y), values[i], 11, GREEN, mono)

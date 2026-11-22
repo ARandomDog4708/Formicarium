@@ -8,8 +8,8 @@ const OUTDOORS: int = WorldData.Kind.OUTDOORS
 const COLONY: int = WorldData.Kind.COLONY
 const LINK_LENGTH: float = 8.0
 const LOCATION_NAMES = ["Outdoors", "Colony"]
-enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_FOOD }
-const MODE_NAMES = ["Exploring", "Following food", "Returning food"]
+enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_FOOD, SEEK_MEAL }
+const MODE_NAMES = ["Exploring", "Following food", "Returning food", "Returning to eat"]
 
 class Ant extends RefCounted:
 	var id: int
@@ -35,6 +35,9 @@ class Ant extends RefCounted:
 	var age: float = 0.0
 	var following_time: float = 0.0
 	var explore_time: float = 0.0
+	var hunger: float = 0.0
+	var meal_retry: float = 0.0
+	var meals: int = 0
 
 var worlds: Array[WorldData] = []
 var fields: Array[Field] = []
@@ -45,8 +48,16 @@ var rng := RandomNumberGenerator.new()
 var elapsed: float = 0.0
 var delivered: int:
 	get:
+		return worlds[COLONY].food_storage.deliveries
+var stored_food: int:
+	get:
 		return worlds[COLONY].food_storage.amount
+var meals_eaten: int:
+	get:
+		return worlds[COLONY].food_storage.meals
 var pickups: int = 0
+var hunger_time: float = 180.0
+var hunger_threshold: float = 65.0
 var outer_radius: float = 82.0
 var inner_radius: float = 9.0
 var view_angle: float = 150.0
@@ -118,17 +129,20 @@ func set_half_life(value: float) -> void:
 	for field in fields:
 		field.half_life = value
 
+static func is_returning(ant: Ant) -> bool:
+	return ant.mode == Mode.RETURN_FOOD or ant.mode == Mode.SEEK_MEAL
+
 func sense_for(ant: Ant, collect: bool = false) -> Dictionary:
 	var empty := {"force": Vector2.ZERO, "count": 0, "visible": PackedVector2Array(), "remote_visible": PackedVector2Array(), "portal_count": 0}
 	if ant.mode == Mode.EXPLORE and ant.explore_time > 0:
 		return empty
-	var kind: int = Field.Kind.HOME if ant.mode == Mode.RETURN_FOOD else Field.Kind.FOOD
+	var kind: int = Field.Kind.HOME if is_returning(ant) else Field.Kind.FOOD
 	var half: float = deg_to_rad(view_angle * 0.5)
 	var local: Dictionary = fields[ant.world_id].sense(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, collect)
 	var remote := {"raw_force": Vector2.ZERO, "count": 0, "visible": PackedVector2Array()}
-	# Once inside, a carrier follows storage scent rather than the surface beacon
-	# back out. Other modes can still smell food through the linked opening.
-	if ant.mode != Mode.RETURN_FOOD or ant.world_id == OUTDOORS:
+	# Returning workers inside follow storage scent rather than the surface
+	# beacon back out. Foragers still smell food through the linked opening.
+	if not is_returning(ant) or ant.world_id == OUTDOORS:
 		remote = fields[ant.world_id].sense_through_portal(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, worlds[ant.world_id].portal, fields[1 - ant.world_id], LINK_LENGTH, collect)
 	var combined: Vector2 = local.raw_force + remote.raw_force
 	return {"force": combined.limit_length(speed), "count": local.count + remote.count, "visible": local.visible, "remote_visible": remote.visible, "portal_count": remote.count}
@@ -157,7 +171,7 @@ func _try_transfer(ant: Ant) -> bool:
 	return true
 
 func mode_counts() -> Array[int]:
-	var counts: Array[int] = [0, 0, 0]
+	var counts: Array[int] = [0, 0, 0, 0]
 	for ant in ants:
 		counts[ant.mode] += 1
 	return counts
@@ -182,6 +196,7 @@ func step(dt: float = FIXED_DT) -> void:
 	# All ants sense the same field before this tick's deposits are applied.
 	for ant in ants:
 		ant.age += dt
+		_update_hunger(ant, dt)
 		ant.portal_cooldown = maxf(0, ant.portal_cooldown - dt)
 		ant.explore_time = maxf(0, ant.explore_time - dt)
 		if ant.mode == Mode.FOLLOW_FOOD:
@@ -207,6 +222,23 @@ func step(dt: float = FIXED_DT) -> void:
 			var strength: float = maxf(0.045, 1.5 * exp(-ant.source_distance / 220.0))
 			fields[ant.world_id].deposit(ant.position, kind, strength)
 			ant.deposit_clock = 0.0
+
+func _update_hunger(ant: Ant, dt: float) -> void:
+	ant.hunger = minf(100.0, ant.hunger + 100.0 * dt / maxf(hunger_time, FIXED_DT))
+	ant.meal_retry = maxf(0.0, ant.meal_retry - dt)
+	# Finish carrying food first; unloading can provide the worker's own meal.
+	if not ant.carrying and ant.hunger >= hunger_threshold and ant.meal_retry <= 0.0 and ant.mode != Mode.SEEK_MEAL:
+		ant.mode = Mode.SEEK_MEAL
+		ant.explore_time = 0.0
+		ant.following_time = 0.0
+		ant.lost_time = 0.0
+		ant.sense_clock = 0.12
+		if sense_for(ant).count == 0:
+			_reverse(ant, false)
+		else:
+			ant.reverse_time = 0.0
+			ant.force = Vector2.ZERO
+			ant.sense_count = 0
 
 func _sense(ant: Ant) -> void:
 	var sensed: Dictionary = sense_for(ant)
@@ -280,10 +312,11 @@ func _avoid_wall(ant: Ant, target: float) -> float:
 				best = candidate
 	return best
 
-func _reverse(ant: Ant) -> void:
+func _reverse(ant: Ant, reset_source: bool = true) -> void:
 	ant.reverse_target = wrapf(ant.heading + PI, -PI, PI)
 	ant.reverse_time = 180.0 / turn_rate + FIXED_DT
-	ant.source_distance = 0.0
+	if reset_source:
+		ant.source_distance = 0.0
 	ant.force = Vector2.ZERO
 	ant.sense_count = 0
 
@@ -292,15 +325,42 @@ func _interact(ant: Ant) -> void:
 	if ant.carrying:
 		if world.store_food(ant.position):
 			ant.carrying = false
-			ant.mode = Mode.EXPLORE
-			ant.explore_time = 3.0
-			_reverse(ant)
+			if ant.hunger >= hunger_threshold:
+				_eat(ant, world)
+			_resume_foraging(ant)
+		return
+	if ant.mode == Mode.SEEK_MEAL and world.accepts_delivery(ant.position):
+		if _eat(ant, world):
+			_resume_foraging(ant)
+		else:
+			# Leave an empty store to forage; avoid immediate hungry U-turns.
+			ant.meal_retry = 30.0
+			_resume_foraging(ant)
 		return
 	for food in world.foods:
 		if food.amount > 0 and ant.position.distance_to(food.position) < 14.0 and world.line_clear(ant.position, food.position):
+			var already_returning: bool = is_returning(ant)
 			food.amount -= 1
 			pickups += 1
 			ant.carrying = true
 			ant.mode = Mode.RETURN_FOOD
-			_reverse(ant)
+			if already_returning:
+				ant.source_distance = 0.0
+			else:
+				_reverse(ant)
 			return
+
+func _eat(ant: Ant, world: WorldData) -> bool:
+	if not world.eat_food(ant.position):
+		return false
+	ant.hunger = 0.0
+	ant.meal_retry = 0.0
+	ant.meals += 1
+	return true
+
+func _resume_foraging(ant: Ant) -> void:
+	ant.mode = Mode.EXPLORE
+	ant.explore_time = 3.0
+	ant.following_time = 0.0
+	ant.lost_time = 0.0
+	_reverse(ant)

@@ -25,11 +25,22 @@ func _run() -> void:
 	expect(app.habitats.size() == 2 and app.habitats[0].world_id != app.habitats[1].world_id, "two viewports display independent maps")
 	expect(app.selected_id == 0 and app.sim.ants[app.selected_id] != null, "initial inspector selection is valid for a ten-ant colony")
 	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 0, "the colony storage shown in the UI starts empty")
+	expect(app.sim.worlds[Sim.COLONY].chambers.size() == 1, "the colony view displays a single chamber")
 	var time: float = app.sim.elapsed
+	var hunger: float = app.sim.ants[0].hunger
 	await physics_frame
 	expect(app.sim.elapsed == time, "pause holds both maps at the same simulation time")
+	expect(app.sim.ants[0].hunger == hunger, "pause also holds hunger meters")
 	app._single_step()
 	expect(is_equal_approx(app.sim.elapsed - time, Sim.FIXED_DT), "step advances both maps by one fixed tick")
+	expect(is_equal_approx(app.sim.ants[0].hunger - hunger, 100 * Sim.FIXED_DT / app.sim.hunger_time), "single-step advances hunger by simulation time")
+	app.sliders.hunger_time.value = 300
+	app.sliders.hunger_threshold.value = 80
+	expect(app.sim.hunger_time == 300 and app.sim.hunger_threshold == 80, "the hunger sliders update fill time and return threshold")
+	app.sim.ants[0].hunger = 79
+	app.sliders.hunger_threshold.value = 75
+	app._single_step()
+	expect(app.sim.ants[0].mode == Sim.Mode.SEEK_MEAL, "changing the hunger threshold sends an eligible worker back to eat")
 	app.sliders.inner.value = 30
 	app.sliders.outer.value = 36
 	expect(app.sim.inner_radius < app.sim.outer_radius and app.sliders.inner.max_value == 28, "radius sliders preserve a nonempty sensing ring")
@@ -80,6 +91,8 @@ func _run() -> void:
 	expect(app.selected_id == 0 and app.habitats[1].selected_id == 0, "reset restores a valid shared selection")
 	expect(app.sim.outer_radius == 82 and app.sim.inner_radius == 9, "reset restores both sensing radii")
 	expect(app.sim.view_angle == 150 and app.sim.turn_rate == 720 and app.sim.fields[1].half_life == 32, "reset restores movement and both fields' decay defaults")
+	expect(app.sim.hunger_time == 180 and app.sim.hunger_threshold == 65 and app.sliders.hunger_time.value == 180 and app.sliders.hunger_threshold.value == 65, "reset restores both hunger settings and controls")
+	expect(app.sim.ants[0].hunger == 0, "reset starts the workers fed again")
 	expect(app.sim.worlds[0].foods.size() == 2 and app.sim.worlds[1].foods.is_empty() and app.sim.elapsed == 0, "reset restores original food in the correct maps")
 	expect(app.paused, "reset preserves pause state")
 	app._set_rate(4)
@@ -97,7 +110,11 @@ func _run() -> void:
 	await process_frame
 	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 1 and app.sim.delivered == 1 and not selected.carrying, "single-step unloads a carrier into the storage displayed by the app")
 	app.sim.clear_trails()
-	expect(app.sim.delivered == 1, "the clear-trails control leaves food stored")
+	expect(app.sim.stored_food == 1 and app.sim.delivered == 1, "the clear-trails control leaves food stored")
+	selected.hunger = app.sim.hunger_threshold
+	app._single_step()
+	await process_frame
+	expect(selected.hunger == 0 and selected.meals == 1 and app.sim.stored_food == 0 and app.sim.delivered == 1, "the app consumes a stored unit for a hungry selected ant")
 	app._reset()
 	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 0 and app.sim.delivered == 0, "reset clears stored provisions as well as the worker state")
 	app._toggle_help()

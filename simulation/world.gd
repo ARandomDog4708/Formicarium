@@ -15,6 +15,8 @@ class FoodStorage extends RefCounted:
 	var position := Vector2(150, 136)
 	var radius: float = 25.0
 	var amount: int = 0
+	var deliveries: int = 0
+	var meals: int = 0
 
 var kind: int
 var walkable := PackedByteArray()
@@ -51,17 +53,9 @@ func _init(location: int = Kind.OUTDOORS) -> void:
 		food_storage = FoodStorage.new()
 		var storage_position: Vector2 = food_storage.position
 		chambers = [
-			{"center": storage_position, "radii": Vector2(74, 48), "name": "FOOD STORAGE"},
-			{"center": Vector2(410, 300), "radii": Vector2(104, 58), "name": "EAST GALLERY"},
-			{"center": Vector2(205, 455), "radii": Vector2(105, 62), "name": "WEST GALLERY"},
-			{"center": Vector2(392, 636), "radii": Vector2(112, 57), "name": "LOWER CHAMBER"},
+			{"center": Vector2(270, 300), "radii": Vector2(225, 260), "name": "COLONY CHAMBER"},
 		]
 		_add_tunnel([Vector2(128, -8), portal, Vector2(127, 87), storage_position], 19.0)
-		_add_tunnel([storage_position, Vector2(242, 192), Vector2(254, 260), Vector2(335, 303), Vector2(410, 300)], 20.0)
-		_add_tunnel([Vector2(410, 300), Vector2(486, 380), Vector2(417, 438), Vector2(300, 455), Vector2(205, 455)], 19.0)
-		_add_tunnel([Vector2(205, 455), Vector2(133, 346), Vector2(148, 269), Vector2(242, 192)], 18.0)
-		_add_tunnel([Vector2(205, 455), Vector2(233, 554), Vector2(294, 615), Vector2(392, 636)], 18.0)
-		_add_tunnel([Vector2(486, 380), Vector2(526, 501), Vector2(479, 576), Vector2(392, 636)], 19.0)
 		for chamber in chambers:
 			_carve_ellipse(chamber.center, chamber.radii)
 		for tunnel in tunnels:
@@ -175,6 +169,14 @@ func store_food(p: Vector2) -> bool:
 	if not accepts_delivery(p):
 		return false
 	food_storage.amount += 1
+	food_storage.deliveries += 1
+	return true
+
+func eat_food(p: Vector2) -> bool:
+	if not accepts_delivery(p) or food_storage.amount <= 0:
+		return false
+	food_storage.amount -= 1
+	food_storage.meals += 1
 	return true
 
 func add_food(p: Vector2, amount: int = 120) -> bool:

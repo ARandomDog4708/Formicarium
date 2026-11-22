@@ -23,6 +23,7 @@ func _run() -> void:
 	_test_portal_sensing()
 	_test_transfers()
 	_test_food_storage()
+	_test_hunger()
 	_test_colony()
 	print("%d checks; %d failures" % [checks, failures])
 	quit(0 if failures == 0 else 1)
@@ -136,6 +137,7 @@ func _test_colony() -> void:
 	var speed_ok: bool = true
 	var turning_ok: bool = true
 	var finite_ok: bool = true
+	var hunger_ok: bool = true
 	var previous_worlds := PackedInt32Array()
 	previous_worlds.resize(sim.ants.size())
 	var previous_headings := PackedFloat32Array()
@@ -154,16 +156,19 @@ func _test_colony() -> void:
 				collision_ok = collision_ok and sim.worlds[ant.world_id].fits(ant.position)
 				speed_ok = speed_ok and ant.velocity.length() <= sim.speed + 0.001
 				finite_ok = finite_ok and ant.position.is_finite() and ant.velocity.is_finite()
+				hunger_ok = hunger_ok and is_finite(ant.hunger) and ant.hunger >= 0 and ant.hunger <= 100
 		if tick % 3600 == 3599:
-			print("Colony at %.0fs: %d picked up; %d delivered; modes %s" % [sim.elapsed, sim.pickups, sim.delivered, str(sim.mode_counts())])
+			print("Colony at %.0fs: %d picked up; %d delivered; %d stored; %d meals; modes %s" % [sim.elapsed, sim.pickups, sim.delivered, sim.stored_food, sim.meals_eaten, str(sim.mode_counts())])
 	expect(collision_ok, "all ants stay in walkable space during a three-minute simulation")
 	expect(speed_ok, "colony speed never exceeds cap")
 	expect(turning_ok, "colony turn rate never exceeds cap")
 	expect(finite_ok, "colony positions and velocities remain finite")
+	expect(hunger_ok, "every ant's hunger remains finite and within its meter")
 	expect(sim.transfers > 0, "workers travel through the entrance between independent maps")
 	expect(sim.ants.size() == 10, "the population remains ten without manual additions")
 	expect(sim.pickups > 0, "colony discovers food without seeded trails")
 	expect(sim.delivered > 0, "colony returns food to underground storage")
+	expect(sim.meals_eaten > 0, "hungry workers eat from storage in the autonomous colony")
 	var remaining: int = 0
 	var carrying: int = 0
 	for world in sim.worlds:
@@ -171,7 +176,8 @@ func _test_colony() -> void:
 			remaining += food.amount
 	for ant in sim.ants:
 		carrying += 1 if ant.carrying else 0
-	expect(remaining + carrying + sim.worlds[Sim.COLONY].food_storage.amount == 440, "food is conserved across piles, carrying and stored food")
+	expect(remaining + carrying + sim.stored_food + sim.meals_eaten == 440, "food is conserved across piles, carrying, storage and consumed meals")
+	expect(sim.delivered == sim.stored_food + sim.meals_eaten, "deliveries account for both remaining provisions and eaten food")
 	print("Three simulated minutes completed in %.2fs real time" % ((Time.get_ticks_msec() - start_time) / 1000.0))
 
 func _set_tile(world, x: int, y: int, value: int) -> void:
@@ -205,6 +211,8 @@ func _test_population() -> void:
 	expect(sim.fields[0].food.count(0.0) == sim.fields[0].food.size(), "clear removes trails across the maps")
 	# Flood the coarse sample graph using wall-checked edges to check tunnel connectivity.
 	var world = sim.worlds[Sim.COLONY]
+	expect(world.chambers.size() == 1 and world.paths.size() == 1, "the colony has one chamber and one entrance tunnel")
+	expect(not world.is_open(Vector2(392, 636)), "the former lower galleries have been removed")
 	var start: int = WorldData.index(floori(world.portal.x / WorldData.CELL), floori(world.portal.y / WorldData.CELL))
 	var queue: Array[int] = [start]
 	var visited := {start: true}
@@ -383,3 +391,107 @@ func _test_food_storage() -> void:
 	for tick in range(60 * 10):
 		route.step()
 	expect(route.pickups == 1 and route.delivered == 1, "delivered food remains stored while the worker explores again")
+
+func _test_hunger() -> void:
+	var sim := Sim.new(0)
+	var outdoors = sim.worlds[Sim.OUTDOORS]
+	var colony = sim.worlds[Sim.COLONY]
+	var storage = colony.food_storage
+	var ant := sim.add_ant(Vector2(200, 100), Sim.OUTDOORS)
+	expect(ant.hunger == 0 and ant.meals == 0, "newly placed workers start fed with an independent hunger meter")
+	sim.hunger_time = 200
+	sim.hunger_threshold = 65
+	sim._update_hunger(ant, 60)
+	expect(is_equal_approx(ant.hunger, 30.0) and ant.mode == Sim.Mode.EXPLORE, "hunger fills linearly with simulation time below the return threshold")
+	sim.hunger_time = 100
+	sim._update_hunger(ant, 10)
+	expect(is_equal_approx(ant.hunger, 40.0), "changing the fill time changes the rate without resetting the meter")
+	ant.source_distance = 120
+	ant.mode = Sim.Mode.FOLLOW_FOOD
+	ant.hunger = 64
+	sim._update_hunger(ant, 0.5)
+	expect(ant.mode == Sim.Mode.FOLLOW_FOOD, "a worker keeps foraging until its hunger reaches the threshold")
+	sim._update_hunger(ant, 0.5)
+	expect(ant.mode == Sim.Mode.SEEK_MEAL and ant.hunger == 65.0, "reaching the hunger threshold starts a return-to-eat trip")
+	expect(ant.source_distance == 120 and ant.explore_time == 0, "seeking a meal preserves the home trail's source distance and bypasses exploration cooldown")
+	sim._update_hunger(ant, 1000)
+	expect(ant.hunger == 100 and is_finite(ant.hunger), "hunger saturates safely at 100 percent")
+	ant.hunger = 50
+	ant.mode = Sim.Mode.EXPLORE
+	sim.hunger_threshold = 40
+	sim._update_hunger(ant, 0)
+	expect(ant.mode == Sim.Mode.SEEK_MEAL, "lowering the threshold affects a worker on its next update")
+	outdoors.foods.clear()
+	ant.position = outdoors.portal + Vector2.RIGHT * 40
+	ant.heading = PI
+	sim.step(0.3)
+	ant.heading = PI
+	var sensed: Dictionary = sim.sense_for(ant)
+	expect(sensed.count > 0 and sensed.force.x < 0, "a hungry worker follows return pheromones toward the mound")
+	ant.world_id = Sim.COLONY
+	ant.position = colony.portal + Vector2.DOWN * 26
+	ant.heading = -PI / 2
+	expect(sim.sense_for(ant).count == 0, "a hungry worker inside ignores the exterior entrance beacon behind it")
+	ant.heading = PI / 2
+	expect(sim.sense_for(ant).force.y > 0, "a hungry worker inside follows the storage beacon")
+	colony.store_food(storage.position)
+	ant.position = colony.portal
+	sim._interact(ant)
+	expect(ant.meals == 0 and storage.amount == 1, "reaching the entrance alone does not feed a hungry ant")
+	ant.position = storage.position + Vector2.LEFT * 12
+	for y in range(57, 79):
+		colony.walkable[WorldData.mask_index(72, y)] = 0
+	sim._interact(ant)
+	expect(ant.meals == 0 and storage.amount == 1, "a hungry worker cannot eat through a wall")
+	ant.position = storage.position
+	sim._interact(ant)
+	expect(storage.amount == 0 and sim.meals_eaten == 1 and ant.meals == 1, "a meal consumes exactly one unit from storage")
+	expect(ant.hunger == 0 and ant.mode == Sim.Mode.EXPLORE, "eating resets the worker's meter and resumes exploration")
+	expect(sim.delivered == 1 and sim.stored_food == 0, "lifetime deliveries remain distinct from the food left in storage")
+	sim._interact(ant)
+	expect(sim.meals_eaten == 1, "a fed worker does not immediately eat again")
+	# An empty store must not trap the whole population waiting for a meal.
+	ant.hunger = 90
+	ant.mode = Sim.Mode.SEEK_MEAL
+	sim._interact(ant)
+	expect(ant.mode == Sim.Mode.EXPLORE and ant.hunger == 90 and ant.meal_retry > 0, "an empty store sends a hungry worker back to forage without falsely feeding it")
+	sim._update_hunger(ant, 1)
+	expect(ant.mode == Sim.Mode.EXPLORE, "a worker gets a foraging interval after finding storage empty")
+	# Carriers bring their food inside before eating from the stockpile.
+	ant.carrying = true
+	ant.mode = Sim.Mode.RETURN_FOOD
+	ant.meal_retry = 0
+	sim._update_hunger(ant, 1)
+	expect(ant.mode == Sim.Mode.RETURN_FOOD and ant.carrying, "a hungry carrier keeps its delivery task")
+	sim._interact(ant)
+	expect(not ant.carrying and ant.hunger == 0 and sim.delivered == 2 and sim.meals_eaten == 2 and sim.stored_food == 0, "a hungry carrier unloads first and can eat the unit it brought back")
+	# Two workers competing for the last stored unit cannot overdraw it.
+	colony.store_food(storage.position)
+	var other := sim.add_ant(storage.position, Sim.COLONY)
+	for worker in [ant, other]:
+		worker.hunger = 90
+		worker.mode = Sim.Mode.SEEK_MEAL
+		worker.meal_retry = 0
+		sim._interact(worker)
+	expect(storage.amount == 0 and sim.meals_eaten == 3 and ant.hunger == 0 and other.hunger == 90, "the last stored unit feeds only one ant and inventory never becomes negative")
+	var scavenger := sim.add_ant(outdoors.portal + Vector2.RIGHT * 40, Sim.OUTDOORS)
+	scavenger.heading = PI
+	scavenger.hunger = 90
+	sim._update_hunger(scavenger, 0)
+	expect(scavenger.mode == Sim.Mode.SEEK_MEAL and scavenger.reverse_time == 0, "a worker already facing return scent keeps heading toward the mound when hungry")
+	outdoors.add_food(scavenger.position, 1)
+	sim._interact(scavenger)
+	expect(scavenger.carrying and scavenger.mode == Sim.Mode.RETURN_FOOD and scavenger.reverse_time == 0, "a hungry returning ant can pick up encountered food without turning away from home")
+	# Verify the complete hunger-driven trip with motion and a portal crossing.
+	var route := Sim.new(0)
+	route.worlds[Sim.OUTDOORS].foods.clear()
+	route.worlds[Sim.COLONY].store_food(route.worlds[Sim.COLONY].food_storage.position)
+	var hungry := route.add_ant(route.worlds[Sim.OUTDOORS].portal + Vector2.RIGHT * 40, Sim.OUTDOORS)
+	hungry.hunger = route.hunger_threshold
+	hungry.heading = 0
+	for tick in range(60 * 30):
+		route.step()
+		if hungry.meals > 0:
+			break
+	expect(hungry.meals == 1 and hungry.world_id == Sim.COLONY and route.transfers > 0, "a hungry ant autonomously returns through the mound and eats in the chamber")
+	expect(hungry.hunger == 0 and route.stored_food == 0, "the complete meal trip updates both hunger and provisions")

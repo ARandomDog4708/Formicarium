@@ -219,6 +219,7 @@ func _draw_storage(world: WorldData) -> void:
 	var label: String = "%d UNITS" % storage.amount
 	var width: float = small_font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
 	draw_string(small_font, center + Vector2(-width * 0.5, -33), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("5a4a2d"))
+	draw_string(small_font, center + Vector2(-43, 45), "FOOD STORAGE", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("675638"))
 
 func _ellipse(center: Vector2, radii: Vector2, color: Color) -> void:
 	var points := PackedVector2Array()
@@ -265,6 +266,8 @@ func _draw_ant(ant) -> void:
 	var facing: float = ant.heading
 	var body := Color("32382a")
 	var tint := Color("a9bd7e") if ant.mode == Sim.Mode.EXPLORE else Color("dc9b50")
+	if ant.mode == Sim.Mode.SEEK_MEAL:
+		tint = Color("d99e85")
 	if ant.carrying:
 		tint = Color("90bed0")
 	var phase: float = ant.age * 23.0 + ant.id * 1.7
@@ -283,6 +286,10 @@ func _draw_ant(ant) -> void:
 		draw_line(p + Vector2(4, side).rotated(facing), p + Vector2(7, side * 3.5).rotated(facing), body, 0.8, true)
 	if ant.carrying:
 		draw_circle(p + Vector2(7, 0).rotated(facing), 2.1, Color("c4dc8a"))
+	# Every worker has its own meter; the inspector enlarges the selected one.
+	draw_rect(Rect2(p + Vector2(-6.5, -11), Vector2(13, 2.5)), Color(0.12, 0.17, 0.10, 0.7))
+	var hunger_color := Color("d99e85") if ant.hunger >= sim.hunger_threshold else Color("c9df9b")
+	draw_rect(Rect2(p + Vector2(-5.5, -10.5), Vector2(11 * ant.hunger / 100.0, 1.5)), hunger_color)
 
 func draw_ellipse_rotated(center: Vector2, radii: Vector2, angle: float, color: Color) -> void:
 	var points := PackedVector2Array()
