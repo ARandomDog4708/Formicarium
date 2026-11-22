@@ -11,9 +11,14 @@ const WALK_COLS: int = 320
 const WALK_ROWS: int = 384
 const PORTAL_RADIUS: float = 18.0
 
+class FoodStorage extends RefCounted:
+	var position := Vector2(150, 136)
+	var radius: float = 25.0
+	var amount: int = 0
+
 var kind: int
 var walkable := PackedByteArray()
-var home := Vector2(150, 136)
+var food_storage: FoodStorage
 var portal := Vector2.ZERO
 var chambers: Array[Dictionary] = []
 var tunnels: Array[Dictionary] = []
@@ -43,14 +48,16 @@ func _init(location: int = Kind.OUTDOORS) -> void:
 		add_food(Vector2(150, 560), 260)
 	else:
 		portal = Vector2(128, 36)
+		food_storage = FoodStorage.new()
+		var storage_position: Vector2 = food_storage.position
 		chambers = [
-			{"center": home, "radii": Vector2(74, 48), "name": "NEST CHAMBER"},
+			{"center": storage_position, "radii": Vector2(74, 48), "name": "FOOD STORAGE"},
 			{"center": Vector2(410, 300), "radii": Vector2(104, 58), "name": "EAST GALLERY"},
 			{"center": Vector2(205, 455), "radii": Vector2(105, 62), "name": "WEST GALLERY"},
 			{"center": Vector2(392, 636), "radii": Vector2(112, 57), "name": "LOWER CHAMBER"},
 		]
-		_add_tunnel([Vector2(128, -8), portal, Vector2(127, 87), home], 19.0)
-		_add_tunnel([home, Vector2(242, 192), Vector2(254, 260), Vector2(335, 303), Vector2(410, 300)], 20.0)
+		_add_tunnel([Vector2(128, -8), portal, Vector2(127, 87), storage_position], 19.0)
+		_add_tunnel([storage_position, Vector2(242, 192), Vector2(254, 260), Vector2(335, 303), Vector2(410, 300)], 20.0)
 		_add_tunnel([Vector2(410, 300), Vector2(486, 380), Vector2(417, 438), Vector2(300, 455), Vector2(205, 455)], 19.0)
 		_add_tunnel([Vector2(205, 455), Vector2(133, 346), Vector2(148, 269), Vector2(242, 192)], 18.0)
 		_add_tunnel([Vector2(205, 455), Vector2(233, 554), Vector2(294, 615), Vector2(392, 636)], 18.0)
@@ -159,6 +166,15 @@ func line_clear(a: Vector2, b: Vector2) -> bool:
 			t_max_y += t_delta_y
 		if not is_mask_open(x, y):
 			return false
+	return true
+
+func accepts_delivery(p: Vector2) -> bool:
+	return food_storage != null and p.distance_squared_to(food_storage.position) < food_storage.radius * food_storage.radius and line_clear(p, food_storage.position)
+
+func store_food(p: Vector2) -> bool:
+	if not accepts_delivery(p):
+		return false
+	food_storage.amount += 1
 	return true
 
 func add_food(p: Vector2, amount: int = 120) -> bool:

@@ -132,7 +132,7 @@ func _draw() -> void:
 	_draw_food(world)
 	_draw_portal(world)
 	if world_id == Sim.COLONY:
-		_draw_nest(world)
+		_draw_storage(world)
 	if selected_id >= 0 and selected_id < sim.ants.size():
 		var selected = sim.ants[selected_id]
 		if show_sensors:
@@ -195,7 +195,7 @@ func _draw_portal(world: WorldData) -> void:
 		_ellipse(p, Vector2(30, 24), Color("b3a16d"))
 		_ellipse(p, Vector2(18, 14), Color("1a2117"))
 		_ellipse(p + Vector2(-1, -2), Vector2(13, 9), Color("0f1711"))
-		draw_string(small_font, p + Vector2(-47, 47), "NEST ENTRANCE", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("dbe4ba"))
+		draw_string(small_font, p + Vector2(-53, 47), "ANTHILL ENTRANCE", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("dbe4ba"))
 	else:
 		draw_circle(p, 13, Color("24271c"), true, -1, true)
 		draw_string(small_font, p + Vector2(27, 5), "TO SURFACE", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("e1cfab"))
@@ -203,13 +203,22 @@ func _draw_portal(world: WorldData) -> void:
 		var radius: float = 20.0 + (sim.elapsed - sim.last_transfer_time) * 16.0
 		draw_arc(p, radius, 0, TAU, 40, Color(0.85, 0.96, 0.70, 0.65), 1.3, true)
 
-func _draw_nest(world: WorldData) -> void:
-	var center: Vector2 = world.home
-	draw_circle(center, 24, Color(0.93, 0.83, 0.58, 0.12))
-	draw_arc(center, 24, 0, TAU, 40, Color(0.88, 0.82, 0.60, 0.43), 1, true)
-	for j in range(9):
-		var p := center + Vector2(-14 + j % 3 * 11, -10 + int(j / 3.0) * 9)
-		_ellipse(p, Vector2(4.1, 2.7), Color("e6d8ad"))
+func _draw_storage(world: WorldData) -> void:
+	var storage = world.food_storage
+	var center: Vector2 = storage.position
+	_ellipse(center + Vector2(0, 3), Vector2(34, 24), Color(0.40, 0.32, 0.18, 0.16))
+	draw_arc(center, storage.radius, 0, TAU, 48, Color("8d794a"), 1.2, true)
+	if storage.amount == 0:
+		draw_line(center + Vector2(-9, 0), center + Vector2(9, 0), Color("9c8759"), 1.0, true)
+	else:
+		for i in range(mini(storage.amount, 30)):
+			var angle: float = i * 2.399
+			var offset := Vector2(cos(angle) * 1.2, sin(angle) * 0.7) * sqrt(float(i)) * 3.4
+			_ellipse(center + offset + Vector2(1, 2), Vector2(4.3, 3.1), Color(0.28, 0.35, 0.15, 0.3))
+			_ellipse(center + offset, Vector2(4, 2.9), Color("698044").lerp(Color("d2e592"), float(i % 4) / 3.0))
+	var label: String = "%d UNITS" % storage.amount
+	var width: float = small_font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+	draw_string(small_font, center + Vector2(-width * 0.5, -33), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("5a4a2d"))
 
 func _ellipse(center: Vector2, radii: Vector2, color: Color) -> void:
 	var points := PackedVector2Array()

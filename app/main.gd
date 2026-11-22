@@ -207,7 +207,7 @@ func _build_help() -> void:
 	title.add_theme_font_size_override("font_size", 23)
 	column.add_child(title)
 	var body := Label.new()
-	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\n4              Place an ant (Shift: ten ants)\nShift         Paint home pheromone instead of food\nWheel      Zoom the map under the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nExplorers lay home trails; returning workers lay food trails.\nThe mound links the maps; scent passes through its hole.\nPheromones evaporate. Solid ground blocks scent."
+	body.text = "Space     Pause / resume\nN             Single fixed step when paused\n1 / 2 / 3   Inspect / place food / paint pheromones\n4              Place an ant (Shift: ten ants)\nShift         Paint home pheromone instead of food\nWheel      Zoom the map under the pointer\nMiddle     Drag to pan the habitat\n0 / R        Fit view / reset colony\nH / Esc    Toggle / close this guide\n\nAnts sense only their selected pheromone type, inside a\nforward ring sector. Dirt blocks movement and scent.\nFood pickup switches a worker to Returning food.\nReturn scent leads to the mound, then underground storage.\nStored food stays in the colony; workers resume exploring."
 	body.add_theme_font_size_override("font_size", 13)
 	body.add_theme_color_override("font_color", TEXT)
 	column.add_child(body)
@@ -361,7 +361,7 @@ func _draw() -> void:
 	_text(Vector2(91, 61), "An ant colony, one small decision at a time.", 11, MUTED)
 	draw_circle(Vector2(1024, 43), 3, GREEN)
 	_text(Vector2(1036, 47), "DESKTOP LAB", 11, MUTED, mono)
-	_text(Vector2(1154, 47), "v0.2", 11, MUTED, mono)
+	_text(Vector2(1154, 47), "v0.3", 11, MUTED, mono)
 	_draw_stats()
 	_text(Vector2(88, 200), "HABITAT", 12, TEXT, bold)
 	_text(Vector2(166, 200), "/  LINKED WORLDS", 11, MUTED, mono)
@@ -399,7 +399,7 @@ func _draw_brand() -> void:
 
 func _draw_stats() -> void:
 	var counts := sim.mode_counts()
-	var titles := ["COLONY POPULATION", "FOOD DELIVERED", "RETURNING WORKERS", "SIMULATION TIME"]
+	var titles := ["COLONY POPULATION", "FOOD STORED", "RETURNING WORKERS", "SIMULATION TIME"]
 	var values := [str(sim.ants.size()), str(sim.delivered), str(counts[2]), _clock(sim.elapsed)]
 	for i in range(4):
 		var x: float = 88 + i * 258
@@ -433,7 +433,10 @@ func _draw_inspector() -> void:
 	var mode_color: Color = [GREEN, AMBER, BLUE][ant.mode]
 	draw_circle(Vector2(1150, 183), 3, mode_color)
 	_text(Vector2(1160, 187), Sim.MODE_NAMES[ant.mode], 11, mode_color)
-	_text(Vector2(1146, 208), Sim.LOCATION_NAMES[ant.world_id].to_upper(), 9, MUTED, mono)
+	var location: String = Sim.LOCATION_NAMES[ant.world_id].to_upper()
+	if ant.mode == Sim.Mode.RETURN_FOOD:
+		location += " · TO STORAGE" if ant.world_id == Sim.COLONY else " · TO ANTHILL"
+	_text(Vector2(1146, 208), location, 9, MUTED, mono)
 	_draw_large_ant(Vector2(1259, 242), mode_color, ant.carrying)
 	_text(Vector2(1146, 288), "SPEED", 9, MUTED, mono)
 	_text(Vector2(1274, 288), "SENSED POINTS", 9, MUTED, mono)

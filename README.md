@@ -89,7 +89,8 @@ entrance, facing down into the tunnel. Going back through that entrance
 returns the same ant outdoors, heading back along its remembered surface
 approach. Identity, mode, carried food and chemical source distance persist.
 A short cooldown and exit offset prevent immediate bouncing between maps.
-Food is delivered inside the nest chamber, rather than at the outdoor mound.
+The mound is an entrance and a source of return pheromone. Food stays with a
+carrying worker until it reaches the storage chamber inside the colony.
 
 Pheromones stay in their own map and can be sensed through the hole. A remote
 sample contributes only when both legs are unobstructed: ant to local opening,
@@ -101,6 +102,26 @@ remote contributions are added before applying the speed cap.
 
 The connection models a small tunnel between two maps; no attraction is
 computed using the distance between the on-screen panels.
+
+## Food storage and returning workers
+
+The first underground chamber is **FOOD STORAGE**. It starts empty and displays
+a pile that grows as workers unload, along with its exact unit count. The
+**FOOD STORED** counter above the maps reads this same stockpile.
+
+Picking up one food unit immediately switches a worker to **Returning food**.
+It follows home/return pheromone toward the anthill while outdoors. After
+crossing the entrance, it follows the storage beacon inside the colony. In
+this mode, a worker already inside ignores the outdoor entrance beacon so
+that it can continue toward storage. Food-trail sensing through the entrance
+still works in both directions for foragers.
+
+A delivery requires being within 25 world units of storage with a clear line
+of sight. Reaching either entrance alone does not unload food. After delivery,
+the worker becomes empty-handed and explores again. Stored provisions are
+separate from forageable food piles and do not emit a food-source beacon, so
+workers do not pick their deliveries straight back up. Clear trails preserves
+stored food; Reset colony empties storage and restores the initial ten ants.
 
 ## The model
 
@@ -122,14 +143,14 @@ The two channels share the exact same equation:
 | --- | --- | --- |
 | Explore | Persistent wandering; can detect food trails | Home |
 | Follow food | Food | Home |
-| Return home | Home | Food |
+| Returning food | Home/return: entrance outdoors, storage indoors | Food |
 
 Workers pick up food on contact, turn around within the turn-rate limit, and
-carry one unit back to the nest. Deposits weaken with distance traveled from
+carry one unit back to storage. Deposits weaken with distance traveled from
 their source. Samples combine repeated deposits in an 8-unit grid and decay
-exponentially, with a default 32-second half-life. Food piles and the colony
-emit local beacons; those obey the same radius, cone and wall checks. The
-outdoor entrance also emits a local home beacon marking the nest location.
+exponentially, with a default 32-second half-life. Food piles emit food beacons;
+the entrance and storage emit home/return beacons. These all obey the same
+radius, cone and wall checks and use the same attraction equation.
 
 Exploration is an explicit state. After delivery, a worker explores for three
 seconds before reacquiring a food trail. A trail followed for 40 seconds
@@ -154,12 +175,12 @@ their foraging.
 Ten workers begin around the outdoor mound. Some initially face the entrance;
 the others explore the flat land. Pheromone trails start empty. Two outdoor
 food piles hold 440 units total. The random seed is 1847. Reset recreates this
-same setup, including removing manually added ants and food.
+same setup, including emptying storage and removing manually added ants and food.
 
 ## Source layout
 
 - simulation/world.gd: independent outdoor and colony maps, curved tunnel
-  geometry, a 2-unit collision/visibility mask, and food sources.
+  geometry, a 2-unit collision/visibility mask, food sources and food storage.
 - simulation/pheromones.gd: per-map chemical fields, deposition, decay, local
   attraction and wall-checked sensing through the entrance.
 - simulation/simulation.gd: ant states, manual spawning, entrance transfers,
@@ -186,6 +207,9 @@ forward angle, channel selection, zero-distance samples, wall occlusion,
 diagonal corners, half-life decay, Euler motion, turn-rate limits, seeded
 repeatability, food conservation and autonomous pickup/delivery. A three-minute
 simulation also checks that ants remain in walkable space with finite state.
+Storage checks cover the complete pickup-to-stockpile journey, indoor/outdoor
+return scent selection, blocked deliveries, exact inventory changes and
+preventing stored provisions from being reharvested.
 Application checks exercise pause/step, both map views, shared selection,
 parameter controls, food placement, both pheromone brush channels, ant
 placement and batches, independent zoom, reset and the controls guide.

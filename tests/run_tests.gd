@@ -22,6 +22,7 @@ func _run() -> void:
 	_test_population()
 	_test_portal_sensing()
 	_test_transfers()
+	_test_food_storage()
 	_test_colony()
 	print("%d checks; %d failures" % [checks, failures])
 	quit(0 if failures == 0 else 1)
@@ -76,7 +77,7 @@ func _test_walls() -> void:
 	for endpoint in [Vector2(348, 372), Vector2(372, 348), Vector2(330, 328), Vector2(350, 328), Vector2(328, 350)]:
 		expect(world.line_clear(Vector2(350, 350), endpoint) and world.line_clear(endpoint, Vector2(350, 350)), "open sight lines ending on grid boundaries are symmetric")
 	var default_world := WorldData.new(WorldData.Kind.COLONY)
-	expect(default_world.is_open(default_world.home), "nest is walkable")
+	expect(default_world.is_open(default_world.food_storage.position), "nest is walkable")
 	expect(not default_world.add_food(Vector2(40, 500)), "food cannot be placed in dirt")
 
 func _test_motion_and_modes() -> void:
@@ -107,10 +108,10 @@ func _test_motion_and_modes() -> void:
 	expect(ant.mode == Sim.Mode.EXPLORE, "an unproductive trail eventually gives way to exploration")
 	sim.worlds[Sim.OUTDOORS].add_food(ant.position, 1)
 	sim._interact(ant)
-	expect(ant.mode == Sim.Mode.RETURN_HOME and ant.carrying and sim.pickups == 1, "food pickup switches to return-home mode")
+	expect(ant.mode == Sim.Mode.RETURN_FOOD and ant.carrying and sim.pickups == 1, "food pickup switches to returning-food mode")
 	expect(sim.worlds[Sim.OUTDOORS].foods[0].amount == 0, "food pickup consumes one unit")
 	ant.world_id = Sim.COLONY
-	ant.position = sim.worlds[Sim.COLONY].home
+	ant.position = sim.worlds[Sim.COLONY].food_storage.position
 	sim._interact(ant)
 	expect(ant.mode == Sim.Mode.EXPLORE and not ant.carrying and sim.delivered == 1, "delivery switches back to exploring")
 	var turn: float = Sim.turn_toward(deg_to_rad(179), deg_to_rad(-179), deg_to_rad(1))
@@ -162,7 +163,7 @@ func _test_colony() -> void:
 	expect(sim.transfers > 0, "workers travel through the entrance between independent maps")
 	expect(sim.ants.size() == 10, "the population remains ten without manual additions")
 	expect(sim.pickups > 0, "colony discovers food without seeded trails")
-	expect(sim.delivered > 0, "colony returns food to the underground nest")
+	expect(sim.delivered > 0, "colony returns food to underground storage")
 	var remaining: int = 0
 	var carrying: int = 0
 	for world in sim.worlds:
@@ -170,7 +171,7 @@ func _test_colony() -> void:
 			remaining += food.amount
 	for ant in sim.ants:
 		carrying += 1 if ant.carrying else 0
-	expect(remaining + carrying + sim.delivered == 440, "food is conserved across piles, carrying and delivery")
+	expect(remaining + carrying + sim.worlds[Sim.COLONY].food_storage.amount == 440, "food is conserved across piles, carrying and stored food")
 	print("Three simulated minutes completed in %.2fs real time" % ((Time.get_ticks_msec() - start_time) / 1000.0))
 
 func _set_tile(world, x: int, y: int, value: int) -> void:
@@ -188,7 +189,7 @@ func _test_population() -> void:
 	expect(not sim.worlds[0].is_open(Vector2(16, 16)), "rounded outdoor corners block ants")
 	expect(not sim.worlds[0].fits(sim.worlds[0].rocks[0].center), "rendered rocks block movement")
 	expect(sim.add_ants(Vector2(100, 100), Sim.OUTDOORS, 1) == 1, "place one ant outdoors")
-	expect(sim.add_ants(sim.worlds[1].home, Sim.COLONY, 10) == 10, "place ten ants inside the colony")
+	expect(sim.add_ants(sim.worlds[1].food_storage.position, Sim.COLONY, 10) == 10, "place ten ants inside the colony")
 	expect(sim.ants.size() == 21 and sim.world_counts() == [11, 10], "population and per-map counts include added workers")
 	var identifiers: Dictionary = {}
 	for ant in sim.ants:
@@ -266,8 +267,8 @@ func _test_portal_sensing() -> void:
 	sim.clear_trails()
 	sim.fields[Sim.COLONY].deposit(target, Field.Kind.HOME, 1)
 	expect(sim.sense_for(ant).count == 0, "portal sensing still filters the pheromone type by mode")
-	ant.mode = Sim.Mode.RETURN_HOME
-	expect(sim.sense_for(ant).portal_count == 1, "return-home mode follows home scent through the hole")
+	ant.mode = Sim.Mode.RETURN_FOOD
+	expect(sim.sense_for(ant).portal_count == 1, "returning-food mode follows home scent through the hole")
 	sim.clear_trails()
 	ant.world_id = Sim.COLONY
 	ant.position = remote.portal + Vector2.DOWN * 28
@@ -287,13 +288,13 @@ func _test_transfers() -> void:
 	ant.heading = PI
 	ant.velocity = Vector2.LEFT * sim.speed
 	ant.carrying = true
-	ant.mode = Sim.Mode.RETURN_HOME
+	ant.mode = Sim.Mode.RETURN_FOOD
 	ant.source_distance = 77
 	var original_id: int = ant.id
 	expect(sim._try_transfer(ant), "stepping into the mound enters the colony map")
 	expect(ant.world_id == Sim.COLONY and sim.worlds[Sim.COLONY].fits(ant.position), "the destination is walkable near the upper-left entrance")
 	expect(ant.position.y > sim.worlds[Sim.COLONY].portal.y and ant.heading == PI / 2, "incoming workers face down from the top of the colony")
-	expect(ant.id == original_id and ant.carrying and ant.mode == Sim.Mode.RETURN_HOME, "crossing preserves identity, carried food, and mode")
+	expect(ant.id == original_id and ant.carrying and ant.mode == Sim.Mode.RETURN_FOOD, "crossing preserves identity, carried food, and mode")
 	expect(sim.ants.size() == 1 and sim.ants[0] == ant and sim.world_counts() == [0, 1], "crossing transfers a worker without duplicating it")
 	expect(ant.source_distance == 77 + Sim.LINK_LENGTH, "crossing accounts for the connector distance")
 	ant.position = sim.worlds[Sim.COLONY].portal
@@ -305,6 +306,80 @@ func _test_transfers() -> void:
 	sim._interact(ant)
 	expect(ant.carrying and sim.delivered == 0, "food is not deposited outside at the mound")
 	ant.world_id = Sim.COLONY
-	ant.position = sim.worlds[Sim.COLONY].home
+	ant.position = sim.worlds[Sim.COLONY].food_storage.position
 	sim._interact(ant)
-	expect(not ant.carrying and sim.delivered == 1, "food is delivered only inside the nest chamber")
+	expect(not ant.carrying and sim.delivered == 1, "food is delivered only into underground storage")
+
+func _test_food_storage() -> void:
+	var sim := Sim.new(0)
+	var outdoors = sim.worlds[Sim.OUTDOORS]
+	var colony = sim.worlds[Sim.COLONY]
+	var storage = colony.food_storage
+	outdoors.foods.clear()
+	expect(outdoors.food_storage == null and storage.amount == 0, "only the colony has storage, which starts empty")
+	expect(colony.fits(storage.position) and colony.foods.is_empty(), "storage is walkable and separate from forageable food piles")
+	sim.step(0.3)
+	var entrance_index: int = WorldData.index(floori(outdoors.portal.x / WorldData.CELL), floori(outdoors.portal.y / WorldData.CELL))
+	var storage_index: int = WorldData.index(floori(storage.position.x / WorldData.CELL), floori(storage.position.y / WorldData.CELL))
+	expect(sim.fields[Sim.OUTDOORS].home[entrance_index] > 0 and sim.fields[Sim.OUTDOORS].food[entrance_index] == 0, "the anthill emits return scent rather than advertising food")
+	expect(sim.fields[Sim.COLONY].home[storage_index] > 0 and sim.fields[Sim.COLONY].food[storage_index] == 0, "storage emits a return beacon even while empty")
+	var ant := sim.add_ant(outdoors.portal + Vector2.RIGHT * 40, Sim.OUTDOORS)
+	ant.explore_time = 0
+	ant.heading = PI
+	expect(sim.sense_for(ant).count == 0, "an empty-handed explorer is not attracted to the anthill's return beacon")
+	outdoors.add_food(ant.position, 1)
+	ant.heading = 0
+	sim._interact(ant)
+	expect(ant.carrying and ant.mode == Sim.Mode.RETURN_FOOD and sim.pickups == 1, "food pickup immediately switches a worker into carrying food home")
+	ant.heading = PI
+	var sensed: Dictionary = sim.sense_for(ant)
+	expect(sensed.count > 0 and sensed.force.x < 0, "a carrier outside follows return pheromones toward the anthill")
+	ant.world_id = Sim.COLONY
+	ant.position = colony.portal + Vector2.DOWN * 26
+	ant.heading = -PI / 2
+	sensed = sim.sense_for(ant)
+	expect(sensed.portal_count == 0 and sensed.count == 0, "a carrier inside ignores the surface return beacon behind it")
+	ant.heading = PI / 2
+	sensed = sim.sense_for(ant)
+	expect(sensed.count > 0 and sensed.force.y > 0, "after entry a carrier follows the indoor beacon toward storage")
+	ant.position = colony.portal
+	sim._interact(ant)
+	expect(ant.carrying and storage.amount == 0, "arriving at the underground entrance does not count as storage delivery")
+	ant.position = storage.position + Vector2.RIGHT * (storage.radius + 2)
+	sim._interact(ant)
+	expect(ant.carrying and storage.amount == 0, "workers must reach the storage drop-off radius")
+	ant.position = storage.position + Vector2.LEFT * 12
+	for y in range(57, 79):
+		colony.walkable[WorldData.mask_index(72, y)] = 0
+	sim._interact(ant)
+	expect(ant.carrying and storage.amount == 0, "storage cannot accept food through a wall, even inside its radius")
+	ant.position = storage.position
+	sim._interact(ant)
+	expect(storage.amount == 1 and sim.delivered == storage.amount and not ant.carrying, "a successful delivery adds exactly one unit to the physical stockpile")
+	expect(ant.mode == Sim.Mode.EXPLORE and ant.explore_time == 3.0, "after unloading, a worker resumes exploration")
+	sim._interact(ant)
+	expect(storage.amount == 1 and not ant.carrying, "stored food is not picked straight back up or counted twice")
+	sim.clear_trails()
+	expect(storage.amount == 1 and sim.fields[Sim.COLONY].home[storage_index] == 0, "clearing pheromones preserves the food stockpile")
+	# An occupied stockpile emits return scent, never a forageable food beacon.
+	var occupied := Sim.new(0)
+	occupied.worlds[Sim.OUTDOORS].foods.clear()
+	occupied.worlds[Sim.COLONY].food_storage.amount = 20
+	occupied.step(0.3)
+	expect(occupied.fields[Sim.COLONY].food.count(0.0) == occupied.fields[Sim.COLONY].food.size(), "stored provisions do not attract foragers as a food source")
+	expect(occupied.fields[Sim.COLONY].home[storage_index] > 0, "the storage beacon remains active after provisions accumulate")
+	# Exercise pickup, motion, portal crossing and unloading without teleporting.
+	var route := Sim.new(0)
+	route.worlds[Sim.OUTDOORS].foods.clear()
+	var worker := route.add_ant(route.worlds[Sim.OUTDOORS].portal + Vector2.RIGHT * 40, Sim.OUTDOORS)
+	worker.heading = 0
+	worker.explore_time = 0
+	route.worlds[Sim.OUTDOORS].add_food(worker.position, 1)
+	for tick in range(60 * 30):
+		route.step()
+		if route.delivered == 1:
+			break
+	expect(route.transfers > 0 and route.delivered == 1 and not worker.carrying, "a worker autonomously carries food through the mound into storage")
+	for tick in range(60 * 10):
+		route.step()
+	expect(route.pickups == 1 and route.delivered == 1, "delivered food remains stored while the worker explores again")

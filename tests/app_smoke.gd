@@ -24,6 +24,7 @@ func _run() -> void:
 	expect(app.sim.ants.size() == 10, "UI starts with exactly ten ants")
 	expect(app.habitats.size() == 2 and app.habitats[0].world_id != app.habitats[1].world_id, "two viewports display independent maps")
 	expect(app.selected_id == 0 and app.sim.ants[app.selected_id] != null, "initial inspector selection is valid for a ten-ant colony")
+	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 0, "the colony storage shown in the UI starts empty")
 	var time: float = app.sim.elapsed
 	await physics_frame
 	expect(app.sim.elapsed == time, "pause holds both maps at the same simulation time")
@@ -45,12 +46,12 @@ func _run() -> void:
 	expect(app.sim.worlds[1].foods.is_empty(), "food tool rejects solid colony dirt")
 	app._on_habitat_click(Vector2(200, 100), false, Sim.OUTDOORS)
 	expect(app.sim.worlds[0].foods.size() == 3 and app.sim.worlds[1].foods.is_empty(), "food tool adds outdoor food only to that map")
-	app._on_habitat_click(app.sim.worlds[1].home, false, Sim.COLONY)
+	app._on_habitat_click(app.sim.worlds[1].food_storage.position, false, Sim.COLONY)
 	expect(app.sim.worlds[1].foods.size() == 1, "food can also be placed inside walkable colony space")
 	app._select_tool(2)
 	app._on_habitat_click(Vector2(100, 100), false, Sim.OUTDOORS)
 	app._on_habitat_click(Vector2(108, 100), true, Sim.OUTDOORS)
-	app._on_habitat_click(app.sim.worlds[1].home, true, Sim.COLONY)
+	app._on_habitat_click(app.sim.worlds[1].food_storage.position, true, Sim.COLONY)
 	expect(app.sim.fields[0].food[WorldData.index(12, 12)] > 0 and app.sim.fields[0].home[WorldData.index(13, 12)] > 0, "scent brush keeps both outdoor pheromone channels")
 	expect(app.sim.fields[1].home[WorldData.index(18, 17)] > 0, "scent brush addresses the clicked colony map")
 	app.sim.clear_trails()
@@ -59,7 +60,7 @@ func _run() -> void:
 	expect(app.tool_buttons.size() == 4 and app.tool_buttons[3].button_pressed, "ant placement is the fourth tool")
 	app._on_habitat_click(Vector2(200, 100), false, Sim.OUTDOORS)
 	expect(app.sim.ants.size() == 11 and app.sim.ants[app.selected_id].world_id == Sim.OUTDOORS, "ant tool places and inspects one outdoor worker")
-	app._on_habitat_click(app.sim.worlds[1].home, true, Sim.COLONY)
+	app._on_habitat_click(app.sim.worlds[1].food_storage.position, true, Sim.COLONY)
 	expect(app.sim.ants.size() == 21 and app.sim.world_counts() == [11, 10], "Shift placement adds ten workers inside the colony")
 	app._on_habitat_click(Vector2(600, 700), true, Sim.COLONY)
 	expect(app.sim.ants.size() == 21, "ant brush rejects solid dirt")
@@ -89,6 +90,16 @@ func _run() -> void:
 	app.sim._try_transfer(selected)
 	await process_frame
 	expect(app.sim.ants[app.selected_id].world_id == Sim.COLONY and app.habitats[0].selected_id == app.habitats[1].selected_id, "the inspector follows a selected worker through the entrance")
+	selected.carrying = true
+	selected.mode = Sim.Mode.RETURN_FOOD
+	selected.position = app.sim.worlds[Sim.COLONY].food_storage.position
+	app._single_step()
+	await process_frame
+	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 1 and app.sim.delivered == 1 and not selected.carrying, "single-step unloads a carrier into the storage displayed by the app")
+	app.sim.clear_trails()
+	expect(app.sim.delivered == 1, "the clear-trails control leaves food stored")
+	app._reset()
+	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 0 and app.sim.delivered == 0, "reset clears stored provisions as well as the worker state")
 	app._toggle_help()
 	expect(app.help_panel.visible, "guide opens")
 	app._toggle_help()

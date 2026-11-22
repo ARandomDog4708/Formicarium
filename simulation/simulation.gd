@@ -8,8 +8,8 @@ const OUTDOORS: int = WorldData.Kind.OUTDOORS
 const COLONY: int = WorldData.Kind.COLONY
 const LINK_LENGTH: float = 8.0
 const LOCATION_NAMES = ["Outdoors", "Colony"]
-enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_HOME }
-const MODE_NAMES = ["Exploring", "Following food", "Returning home"]
+enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_FOOD }
+const MODE_NAMES = ["Exploring", "Following food", "Returning food"]
 
 class Ant extends RefCounted:
 	var id: int
@@ -43,7 +43,9 @@ var last_transfer_time: float = -100.0
 var ants: Array[Ant] = []
 var rng := RandomNumberGenerator.new()
 var elapsed: float = 0.0
-var delivered: int = 0
+var delivered: int:
+	get:
+		return worlds[COLONY].food_storage.amount
 var pickups: int = 0
 var outer_radius: float = 82.0
 var inner_radius: float = 9.0
@@ -84,7 +86,7 @@ func add_ant(p: Vector2, world_id: int = OUTDOORS) -> Ant:
 	ant.deposit_clock = rng.randf_range(0, 0.16)
 	ant.wander_clock = rng.randf_range(0, 0.7)
 	ant.explore_time = rng.randf_range(0, 3.0)
-	ant.source_distance = p.distance_to(worlds[COLONY].home) if world_id == COLONY else p.distance_to(worlds[OUTDOORS].portal) + 100.0
+	ant.source_distance = p.distance_to(worlds[COLONY].food_storage.position) if world_id == COLONY else p.distance_to(worlds[OUTDOORS].portal) + 100.0
 	ants.append(ant)
 	return ant
 
@@ -120,10 +122,14 @@ func sense_for(ant: Ant, collect: bool = false) -> Dictionary:
 	var empty := {"force": Vector2.ZERO, "count": 0, "visible": PackedVector2Array(), "remote_visible": PackedVector2Array(), "portal_count": 0}
 	if ant.mode == Mode.EXPLORE and ant.explore_time > 0:
 		return empty
-	var kind: int = Field.Kind.HOME if ant.mode == Mode.RETURN_HOME else Field.Kind.FOOD
+	var kind: int = Field.Kind.HOME if ant.mode == Mode.RETURN_FOOD else Field.Kind.FOOD
 	var half: float = deg_to_rad(view_angle * 0.5)
 	var local: Dictionary = fields[ant.world_id].sense(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, collect)
-	var remote: Dictionary = fields[ant.world_id].sense_through_portal(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, worlds[ant.world_id].portal, fields[1 - ant.world_id], LINK_LENGTH, collect)
+	var remote := {"raw_force": Vector2.ZERO, "count": 0, "visible": PackedVector2Array()}
+	# Once inside, a carrier follows storage scent rather than the surface beacon
+	# back out. Other modes can still smell food through the linked opening.
+	if ant.mode != Mode.RETURN_FOOD or ant.world_id == OUTDOORS:
+		remote = fields[ant.world_id].sense_through_portal(ant.position, ant.heading, kind, inner_radius, outer_radius, half, speed, falloff, worlds[ant.world_id].portal, fields[1 - ant.world_id], LINK_LENGTH, collect)
 	var combined: Vector2 = local.raw_force + remote.raw_force
 	return {"force": combined.limit_length(speed), "count": local.count + remote.count, "visible": local.visible, "remote_visible": remote.visible, "portal_count": remote.count}
 
@@ -165,9 +171,9 @@ func step(dt: float = FIXED_DT) -> void:
 		field_clock = 0.0
 	source_clock += dt
 	if source_clock >= 0.3:
-		# Nest odor at the surface entrance is a local beacon, not global steering.
+		# The mound emits return scent only. Food is deposited at underground storage.
 		fields[OUTDOORS].deposit(worlds[OUTDOORS].portal, Field.Kind.HOME, 3.0)
-		fields[COLONY].deposit(worlds[COLONY].home, Field.Kind.HOME, 4.0)
+		fields[COLONY].deposit(worlds[COLONY].food_storage.position, Field.Kind.HOME, 4.0)
 		for world_id in [OUTDOORS, COLONY]:
 			for food in worlds[world_id].foods:
 				if food.amount > 0:
@@ -250,7 +256,7 @@ func _move(ant: Ant, dt: float) -> void:
 		ant.source_distance += velocity.length() * dt
 	else:
 		ant.velocity = Vector2.ZERO
-	if ant.world_id == COLONY and not ant.carrying and ant.position.distance_to(world.home) < 23.0:
+	if not ant.carrying and world.accepts_delivery(ant.position):
 		ant.source_distance = 0.0
 	_try_transfer(ant)
 
@@ -284,8 +290,7 @@ func _reverse(ant: Ant) -> void:
 func _interact(ant: Ant) -> void:
 	var world: WorldData = worlds[ant.world_id]
 	if ant.carrying:
-		if ant.world_id == COLONY and ant.position.distance_to(world.home) < 25.0:
-			delivered += 1
+		if world.store_food(ant.position):
 			ant.carrying = false
 			ant.mode = Mode.EXPLORE
 			ant.explore_time = 3.0
@@ -296,6 +301,6 @@ func _interact(ant: Ant) -> void:
 			food.amount -= 1
 			pickups += 1
 			ant.carrying = true
-			ant.mode = Mode.RETURN_HOME
+			ant.mode = Mode.RETURN_FOOD
 			_reverse(ant)
 			return
