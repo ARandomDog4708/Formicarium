@@ -10,6 +10,7 @@ const WALK_CELL: float = 2.0
 const WALK_COLS: int = 320
 const WALK_ROWS: int = 384
 const PORTAL_RADIUS: float = 18.0
+const LOW_FOOD: int = 5
 
 class FoodStorage extends RefCounted:
 	var position := Vector2(150, 136)
@@ -17,6 +18,7 @@ class FoodStorage extends RefCounted:
 	var amount: int = 0
 	var deliveries: int = 0
 	var meals: int = 0
+	var growth_food: int = 0
 
 var kind: int
 var walkable := PackedByteArray()
@@ -186,8 +188,37 @@ func add_food(p: Vector2, amount: int = 120) -> bool:
 		if food.position.distance_to(p) < 18.0:
 			food.amount += amount
 			food.initial += amount
+			if food.amount > LOW_FOOD:
+				food.replacement_due = false
 			return true
-	foods.append({"position": p, "amount": amount, "initial": amount})
+	foods.append({"position": p, "amount": amount, "initial": amount, "replacement_due": false, "replacement_retry": 0.0})
+	return true
+
+func spawn_food_source(random: RandomNumberGenerator, amount: int = 120) -> bool:
+	if kind != Kind.OUTDOORS or amount <= 0:
+		return false
+	for attempt in range(128):
+		var p := Vector2(random.randf_range(32, WIDTH - 32), random.randf_range(32, HEIGHT - 32))
+		if _can_spawn_food_at(p):
+			return add_food(p, amount)
+	# A fixed scan also finds open ground when random attempts miss a small gap.
+	for y in range(4, ROWS - 4, 4):
+		for x in range(4, COLS - 4, 4):
+			var p := cell_center(x, y)
+			if _can_spawn_food_at(p):
+				return add_food(p, amount)
+	return false
+
+func _can_spawn_food_at(p: Vector2) -> bool:
+	if not fits(p, 18.0) or p.distance_to(portal) < 60.0:
+		return false
+	var x: int = floori(p.x / CELL)
+	var y: int = floori(p.y / CELL)
+	if not is_cell_open(x, y) or not line_clear(p, cell_center(x, y)):
+		return false
+	for food in foods:
+		if food.amount > 0 and p.distance_to(food.position) < 60.0:
+			return false
 	return true
 
 func make_texture() -> ImageTexture:

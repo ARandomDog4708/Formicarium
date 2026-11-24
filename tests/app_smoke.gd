@@ -117,6 +117,24 @@ func _run() -> void:
 	expect(selected.hunger == 0 and selected.meals == 1 and app.sim.stored_food == 0 and app.sim.delivered == 1, "the app consumes a stored unit for a hungry selected ant")
 	app._reset()
 	expect(app.sim.worlds[Sim.COLONY].food_storage.amount == 0 and app.sim.delivered == 0, "reset clears stored provisions as well as the worker state")
+	for unit in range(15):
+		app.sim.worlds[Sim.COLONY].store_food(app.sim.worlds[Sim.COLONY].food_storage.position)
+	await physics_frame
+	expect(app.sim.ants.size() == 10 and app.sim.births == 0 and app.sim.stored_food == 15, "pause holds automatic reproduction even when enough food is stored")
+	app._single_step()
+	await process_frame
+	expect(app.sim.ants.size() == 11 and app.sim.births == 1 and app.sim.stored_food == 0 and app.sim.birth_cost() == 17, "stepping produces one worker and updates the population and next cost")
+	app._select_ant(app.sim.ants[-1].id)
+	await process_frame
+	expect(app.habitats[0].selected_id == 10 and app.habitats[1].selected_id == 10 and app.sim.ants[10].hunger == 0, "a born worker can be selected in the shared inspector")
+	app._reset()
+	app.sim.worlds[Sim.OUTDOORS].add_food(Vector2(200, 100), 6)
+	app.sim.ants[0].position = Vector2(200, 100)
+	app._single_step()
+	await process_frame
+	expect(app.sim.worlds[Sim.OUTDOORS].foods.size() == 4 and app.sim.food_sources_spawned == 1, "single-step replaces a low source in the outdoor map shown by the app")
+	app._reset()
+	expect(app.sim.ants.size() == 10 and app.selected_id == 0 and app.sim.births == 0 and app.sim.food_for_growth == 0 and app.sim.food_sources_spawned == 0 and app.sim.worlds[Sim.OUTDOORS].foods.size() == 2, "reset clears automatic births, food costs and replacement sources")
 	app._toggle_help()
 	expect(app.help_panel.visible, "guide opens")
 	app._toggle_help()

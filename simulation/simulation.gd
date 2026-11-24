@@ -8,6 +8,9 @@ const OUTDOORS: int = WorldData.Kind.OUTDOORS
 const COLONY: int = WorldData.Kind.COLONY
 const LINK_LENGTH: float = 8.0
 const LOCATION_NAMES = ["Outdoors", "Colony"]
+const FOOD_PER_ANT: float = 1.5
+const LOW_FOOD: int = WorldData.LOW_FOOD
+const NEW_SOURCE_FOOD: int = 120
 enum Mode { EXPLORE, FOLLOW_FOOD, RETURN_FOOD, SEEK_MEAL }
 const MODE_NAMES = ["Exploring", "Following food", "Returning food", "Returning to eat"]
 
@@ -56,6 +59,14 @@ var meals_eaten: int:
 	get:
 		return worlds[COLONY].food_storage.meals
 var pickups: int = 0
+var births: int = 0
+var food_sources_spawned: int = 0
+var food_for_growth: int:
+	get:
+		return worlds[COLONY].food_storage.growth_food
+var food_generated: int:
+	get:
+		return food_sources_spawned * NEW_SOURCE_FOOD
 var hunger_time: float = 180.0
 var hunger_threshold: float = 65.0
 var outer_radius: float = 82.0
@@ -120,6 +131,39 @@ func world_counts() -> Array[int]:
 	for ant in ants:
 		counts[ant.world_id] += 1
 	return counts
+
+func birth_cost() -> int:
+	return maxi(1, ceili(ants.size() * FOOD_PER_ANT))
+
+func _try_produce_ant() -> bool:
+	if ants.is_empty():
+		return false
+	var cost: int = birth_cost()
+	var colony: WorldData = worlds[COLONY]
+	var storage = colony.food_storage
+	if storage.amount < cost or not colony.fits(storage.position):
+		return false
+	var position: Vector2 = storage.position + Vector2.from_angle(rng.randf_range(0, TAU)) * rng.randf_range(3, 12)
+	if not colony.fits(position):
+		position = storage.position
+	if add_ant(position, COLONY) == null:
+		return false
+	storage.amount -= cost
+	storage.growth_food += cost
+	births += 1
+	return true
+
+func _replace_low_food_sources() -> void:
+	for world in worlds:
+		# Replacements always grow outdoors; inspect a snapshot before appending.
+		for food in world.foods.duplicate():
+			if not food.replacement_due or food.amount > LOW_FOOD or food.replacement_retry > elapsed:
+				continue
+			if worlds[OUTDOORS].spawn_food_source(rng, NEW_SOURCE_FOOD):
+				food.replacement_due = false
+				food_sources_spawned += 1
+			else:
+				food.replacement_retry = elapsed + 1.0
 
 func clear_trails() -> void:
 	for field in fields:
@@ -222,6 +266,9 @@ func step(dt: float = FIXED_DT) -> void:
 			var strength: float = maxf(0.045, 1.5 * exp(-ant.source_distance / 220.0))
 			fields[ant.world_id].deposit(ant.position, kind, strength)
 			ant.deposit_clock = 0.0
+	# Meals and deliveries resolve before growth. New workers join next tick.
+	_try_produce_ant()
+	_replace_low_food_sources()
 
 func _update_hunger(ant: Ant, dt: float) -> void:
 	ant.hunger = minf(100.0, ant.hunger + 100.0 * dt / maxf(hunger_time, FIXED_DT))
@@ -341,6 +388,9 @@ func _interact(ant: Ant) -> void:
 		if food.amount > 0 and ant.position.distance_to(food.position) < 14.0 and world.line_clear(ant.position, food.position):
 			var already_returning: bool = is_returning(ant)
 			food.amount -= 1
+			if food.amount == LOW_FOOD:
+				food.replacement_due = true
+				food.replacement_retry = 0.0
 			pickups += 1
 			ant.carrying = true
 			ant.mode = Mode.RETURN_FOOD

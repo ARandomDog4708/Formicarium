@@ -24,6 +24,8 @@ func _run() -> void:
 	_test_transfers()
 	_test_food_storage()
 	_test_hunger()
+	_test_growth()
+	_test_food_replacements()
 	_test_colony()
 	print("%d checks; %d failures" % [checks, failures])
 	quit(0 if failures == 0 else 1)
@@ -139,16 +141,18 @@ func _test_colony() -> void:
 	var finite_ok: bool = true
 	var hunger_ok: bool = true
 	var previous_worlds := PackedInt32Array()
-	previous_worlds.resize(sim.ants.size())
 	var previous_headings := PackedFloat32Array()
-	previous_headings.resize(sim.ants.size())
 	var start_time: int = Time.get_ticks_msec()
 	for tick in range(60 * 180):
-		for i in range(sim.ants.size()):
+		var previous_count: int = sim.ants.size()
+		previous_worlds.resize(previous_count)
+		previous_headings.resize(previous_count)
+		for i in range(previous_count):
 			previous_headings[i] = sim.ants[i].heading
 			previous_worlds[i] = sim.ants[i].world_id
 		sim.step()
-		for ant in sim.ants:
+		for i in range(previous_count):
+			var ant = sim.ants[i]
 			if previous_worlds[ant.id] == ant.world_id and absf(angle_difference(previous_headings[ant.id], ant.heading)) > deg_to_rad(sim.turn_rate) * Sim.FIXED_DT + 0.00001:
 				turning_ok = false
 		if tick % 60 == 0:
@@ -158,14 +162,14 @@ func _test_colony() -> void:
 				finite_ok = finite_ok and ant.position.is_finite() and ant.velocity.is_finite()
 				hunger_ok = hunger_ok and is_finite(ant.hunger) and ant.hunger >= 0 and ant.hunger <= 100
 		if tick % 3600 == 3599:
-			print("Colony at %.0fs: %d picked up; %d delivered; %d stored; %d meals; modes %s" % [sim.elapsed, sim.pickups, sim.delivered, sim.stored_food, sim.meals_eaten, str(sim.mode_counts())])
+			print("Colony at %.0fs: %d ants; %d born; %d picked up; %d delivered; %d stored; %d meals; %d growth food; %d new sources" % [sim.elapsed, sim.ants.size(), sim.births, sim.pickups, sim.delivered, sim.stored_food, sim.meals_eaten, sim.food_for_growth, sim.food_sources_spawned])
 	expect(collision_ok, "all ants stay in walkable space during a three-minute simulation")
 	expect(speed_ok, "colony speed never exceeds cap")
 	expect(turning_ok, "colony turn rate never exceeds cap")
 	expect(finite_ok, "colony positions and velocities remain finite")
 	expect(hunger_ok, "every ant's hunger remains finite and within its meter")
 	expect(sim.transfers > 0, "workers travel through the entrance between independent maps")
-	expect(sim.ants.size() == 10, "the population remains ten without manual additions")
+	expect(sim.births > 0 and sim.ants.size() == 10 + sim.births, "stored food grows the initial ten-ant colony without manual additions")
 	expect(sim.pickups > 0, "colony discovers food without seeded trails")
 	expect(sim.delivered > 0, "colony returns food to underground storage")
 	expect(sim.meals_eaten > 0, "hungry workers eat from storage in the autonomous colony")
@@ -176,8 +180,8 @@ func _test_colony() -> void:
 			remaining += food.amount
 	for ant in sim.ants:
 		carrying += 1 if ant.carrying else 0
-	expect(remaining + carrying + sim.stored_food + sim.meals_eaten == 440, "food is conserved across piles, carrying, storage and consumed meals")
-	expect(sim.delivered == sim.stored_food + sim.meals_eaten, "deliveries account for both remaining provisions and eaten food")
+	expect(remaining + carrying + sim.stored_food + sim.meals_eaten + sim.food_for_growth == 440 + sim.food_generated, "food accounting includes generated sources, meals and reproduction")
+	expect(sim.delivered == sim.stored_food + sim.meals_eaten + sim.food_for_growth, "deliveries account for storage, meals and growth")
 	print("Three simulated minutes completed in %.2fs real time" % ((Time.get_ticks_msec() - start_time) / 1000.0))
 
 func _set_tile(world, x: int, y: int, value: int) -> void:
@@ -495,3 +499,141 @@ func _test_hunger() -> void:
 			break
 	expect(hungry.meals == 1 and hungry.world_id == Sim.COLONY and route.transfers > 0, "a hungry ant autonomously returns through the mound and eats in the chamber")
 	expect(hungry.hunger == 0 and route.stored_food == 0, "the complete meal trip updates both hunger and provisions")
+
+func _test_growth() -> void:
+	var sim := Sim.new()
+	var colony = sim.worlds[Sim.COLONY]
+	var storage = colony.food_storage
+	expect(sim.birth_cost() == 15 and not sim._try_produce_ant(), "ten ants need fifteen stored food, rather than food still in outdoor piles")
+	for unit in range(14):
+		colony.store_food(storage.position)
+	sim.step()
+	expect(sim.ants.size() == 10 and sim.births == 0 and storage.amount == 14, "being one food below the birth threshold does not produce a worker")
+	colony.store_food(storage.position)
+	sim.step()
+	expect(sim.ants.size() == 11 and sim.births == 1 and sim.stored_food == 0 and sim.food_for_growth == 15, "exactly fifteen stored food produces one ant and pays its cost")
+	var newborn = sim.ants[-1]
+	expect(newborn.id == 10 and newborn.world_id == Sim.COLONY and colony.fits(newborn.position), "a newborn has a unique id and a walkable position near storage")
+	expect(newborn.hunger == 0 and newborn.age == 0 and newborn.mode == Sim.Mode.EXPLORE and not newborn.carrying, "newborns start fed and join the simulation on the following tick")
+	expect(sim.birth_cost() == 17, "the next threshold is rounded up from eleven times one and a half")
+	for unit in range(16):
+		colony.store_food(storage.position)
+	sim.step()
+	expect(sim.ants.size() == 11 and sim.stored_food == 16 and newborn.age > 0, "the newborn moves normally while the next birth waits for enough food")
+	colony.store_food(storage.position)
+	sim.step()
+	expect(sim.ants.size() == 12 and sim.births == 2 and sim.food_for_growth == 32 and sim.stored_food == 0, "each birth recalculates and spends the cost for the current population")
+	sim.add_ant(Vector2(100, 100), Sim.OUTDOORS)
+	expect(sim.birth_cost() == 20 and sim.births == 2, "manually added workers count toward the next cost without being counted as births")
+	for unit in range(50):
+		colony.store_food(storage.position)
+	sim.step()
+	expect(sim.ants.size() == 14 and sim.births == 3 and sim.stored_food == 30, "a large surplus produces at most one newborn per fixed step")
+	sim.step()
+	expect(sim.ants.size() == 15 and sim.births == 4 and sim.stored_food == 9 and sim.food_for_growth == 73, "the following tick applies the increased birth cost")
+	var ids: Dictionary = {}
+	for ant in sim.ants:
+		ids[ant.id] = true
+	expect(ids.size() == sim.ants.size(), "births preserve unique worker identifiers alongside manual additions")
+	var blocked := Sim.new(1)
+	var blocked_colony = blocked.worlds[Sim.COLONY]
+	for unit in range(2):
+		blocked_colony.store_food(blocked_colony.food_storage.position)
+	blocked_colony.walkable.fill(0)
+	expect(not blocked._try_produce_ant() and blocked.stored_food == 2 and blocked.food_for_growth == 0 and blocked.ants.size() == 1, "a blocked birth location does not charge food or create an invalid ant")
+	var empty := Sim.new(0)
+	empty.worlds[Sim.COLONY].food_storage.amount = 20
+	empty.step()
+	expect(empty.ants.is_empty() and empty.stored_food == 20, "an empty test colony does not create free workers")
+	var hungry := Sim.new()
+	var hungry_colony = hungry.worlds[Sim.COLONY]
+	for unit in range(15):
+		hungry_colony.store_food(hungry_colony.food_storage.position)
+	for ant in hungry.ants:
+		ant.world_id = Sim.COLONY
+		ant.position = hungry_colony.food_storage.position
+		ant.hunger = hungry.hunger_threshold
+		ant.mode = Sim.Mode.SEEK_MEAL
+	hungry.step()
+	expect(hungry.meals_eaten == 10 and hungry.births == 0 and hungry.stored_food == 5, "workers already at storage eat before reproduction spends the remaining food")
+
+func _test_food_replacements() -> void:
+	var sim := Sim.new(0)
+	var outside = sim.worlds[Sim.OUTDOORS]
+	outside.foods.clear()
+	outside.add_food(Vector2(200, 100), 6)
+	var source: Dictionary = outside.foods[0]
+	var ant := sim.add_ant(source.position, Sim.OUTDOORS)
+	sim._interact(ant)
+	expect(source.amount == 5 and source.replacement_due, "picking a pile down from six to five queues one replacement")
+	sim.step()
+	expect(outside.foods.size() == 2 and sim.food_sources_spawned == 1 and sim.food_generated == 120, "the end of the tick creates one new outdoor pile of 120 food")
+	var replacement: Dictionary = outside.foods[-1]
+	expect(source.amount == 5 and not source.replacement_due and replacement.amount == 120, "the original five units remain available after replacement")
+	expect(outside.fits(replacement.position, 18) and replacement.position.distance_to(outside.portal) >= 60 and replacement.position.distance_to(source.position) >= 60, "a replacement has clear ground and avoids the entrance and existing food")
+	sim.step(0.3)
+	var cell: int = WorldData.index(floori(replacement.position.x / WorldData.CELL), floori(replacement.position.y / WorldData.CELL))
+	expect(sim.fields[Sim.OUTDOORS].food[cell] > 0, "the new food source emits its normal food pheromone")
+	for tick in range(20):
+		sim.step()
+	expect(sim.food_sources_spawned == 1 and outside.foods.size() == 2, "a source left at five does not spawn another pile every frame")
+	for unit in range(5):
+		var collector := sim.add_ant(source.position, Sim.OUTDOORS)
+		sim._interact(collector)
+	sim._replace_low_food_sources()
+	expect(source.amount == 0 and sim.food_sources_spawned == 1, "collecting the last five units does not retrigger the same depletion")
+	replacement.amount = 6
+	var collector := sim.add_ant(replacement.position, Sim.OUTDOORS)
+	sim._interact(collector)
+	sim._replace_low_food_sources()
+	expect(sim.food_sources_spawned == 2 and replacement.amount == 5, "a generated source can produce its own successor when it runs low")
+	outside.add_food(source.position, 6)
+	collector = sim.add_ant(source.position, Sim.OUTDOORS)
+	sim._interact(collector)
+	sim._replace_low_food_sources()
+	expect(sim.food_sources_spawned == 3, "refilling an old source allows one new replacement on its next depletion")
+	var rapid := Sim.new(0)
+	var rapid_world = rapid.worlds[Sim.OUTDOORS]
+	rapid_world.foods.clear()
+	rapid_world.add_food(Vector2(200, 100), 6)
+	for unit in range(6):
+		rapid.add_ant(Vector2(200, 100), Sim.OUTDOORS)
+	rapid.step()
+	expect(rapid.pickups == 6 and rapid_world.foods[0].amount == 0 and rapid.food_sources_spawned == 1, "multiple pickups in one tick cannot skip or duplicate the five-food event")
+	var blocked := Sim.new(0)
+	var blocked_world = blocked.worlds[Sim.OUTDOORS]
+	blocked_world.foods.clear()
+	blocked_world.add_food(Vector2(200, 100), 6)
+	var worker := blocked.add_ant(Vector2(200, 100), Sim.OUTDOORS)
+	blocked._interact(worker)
+	blocked_world.walkable.fill(0)
+	blocked._replace_low_food_sources()
+	expect(blocked_world.foods.size() == 1 and blocked_world.foods[0].replacement_due and blocked.food_sources_spawned == 0, "a crowded or blocked map keeps the replacement pending without losing food")
+	blocked_world.walkable.fill(1)
+	blocked.elapsed += 1.0
+	blocked._replace_low_food_sources()
+	expect(blocked.food_sources_spawned == 1 and not blocked_world.foods[0].replacement_due, "a pending replacement succeeds when clear ground is available")
+	var indoor := Sim.new(0)
+	var colony = indoor.worlds[Sim.COLONY]
+	colony.add_food(colony.food_storage.position, 6)
+	worker = indoor.add_ant(colony.food_storage.position, Sim.COLONY)
+	indoor._interact(worker)
+	indoor._replace_low_food_sources()
+	expect(colony.foods.size() == 1 and indoor.worlds[Sim.OUTDOORS].foods.size() == 3 and indoor.food_sources_spawned == 1, "a manually placed indoor source also creates its replacement outside")
+	var provisions := Sim.new(0)
+	colony = provisions.worlds[Sim.COLONY]
+	for unit in range(6):
+		colony.store_food(colony.food_storage.position)
+	colony.eat_food(colony.food_storage.position)
+	provisions._replace_low_food_sources()
+	expect(provisions.stored_food == 5 and provisions.food_sources_spawned == 0, "the colony's food store is separate from replenishing forage sources")
+	var a := Sim.new(1, 99)
+	var b := Sim.new(1, 99)
+	for model in [a, b]:
+		model.worlds[Sim.OUTDOORS].foods.clear()
+		model.worlds[Sim.OUTDOORS].add_food(Vector2(200, 100), 6)
+		model.ants[0].position = Vector2(200, 100)
+		for unit in range(2):
+			model.worlds[Sim.COLONY].store_food(model.worlds[Sim.COLONY].food_storage.position)
+		model.step()
+	expect(a.births == 1 and a.food_sources_spawned == 1 and a.ants[-1].position == b.ants[-1].position and a.worlds[Sim.OUTDOORS].foods[-1].position == b.worlds[Sim.OUTDOORS].foods[-1].position, "birth locations and random food placement repeat with the same seed")

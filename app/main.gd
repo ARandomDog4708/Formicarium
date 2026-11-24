@@ -366,7 +366,7 @@ func _draw() -> void:
 	_text(Vector2(91, 61), "An ant colony, one small decision at a time.", 11, MUTED)
 	draw_circle(Vector2(1024, 43), 3, GREEN)
 	_text(Vector2(1036, 47), "DESKTOP LAB", 11, MUTED, mono)
-	_text(Vector2(1154, 47), "v0.4", 11, MUTED, mono)
+	_text(Vector2(1154, 47), "v0.5", 11, MUTED, mono)
 	_draw_stats()
 	_text(Vector2(88, 200), "HABITAT", 12, TEXT, bold)
 	_text(Vector2(166, 200), "/  LINKED WORLDS", 11, MUTED, mono)
@@ -416,6 +416,10 @@ func _draw_stats() -> void:
 			_text(Vector2(x + 133, 151), str(rate) + "×", 11, GREEN, mono)
 		else:
 			_text(Vector2(x + 76, 147), ["workers", "units", "workers"][i], 10, MUTED)
+		if i == 0:
+			_text(Vector2(x + 15, 166), "Born %d · Next ant %d food" % [sim.births, sim.birth_cost()], 9, MUTED, mono)
+		elif i == 1:
+			_text(Vector2(x + 15, 166), "Growth %d · New food piles %d" % [sim.food_for_growth, sim.food_sources_spawned], 9, MUTED, mono)
 
 static func _clock(seconds: float) -> String:
 	return "%02d:%02d" % [int(seconds) / 60, int(seconds) % 60]

@@ -72,6 +72,7 @@ Start with **10 workers**. Select the Ants tool (4) to place more in either
 map; Shift-click places ten. Reset restores the original ten. Each map has
 its own zoom and pan. The bottom zoom buttons control the most recently
 clicked map. Inspection follows the same worker as it travels between maps.
+Stored food can also produce new workers automatically.
 
 Use 1×, 2× and 4× to change the number of fixed simulation steps, independently
 of the display frame rate. The inspector adjusts both radii, the forward
@@ -126,6 +127,34 @@ foragers do not pick their deliveries straight back up. Hungry workers eat
 from storage instead. Clear trails preserves stored food; Reset colony empties
 storage and restores the initial ten ants.
 
+## Colony growth and food replacement
+
+The colony produces a worker whenever stored food reaches
+`ceil(current_ant_count * 1.5)`. It spends that amount from storage and the
+new worker appears inside the chamber near the stockpile, fed and ready to
+explore. For example, ten ants need 15 food for the eleventh worker; eleven
+ants then need 17 food for the twelfth. Manually added workers count toward
+the next threshold.
+
+Workers eat and unload before growth is checked. At most one worker is born
+per fixed step, and the next cost is recalculated from the new population.
+The population card shows automatic births and the next food cost; the food
+card shows food spent on growth and the number of automatic new food piles.
+
+When collection brings a forage source down to **five units**, a new source
+containing **120 food** appears at a random clear location outdoors. It stays
+away from rocks, the entrance and other active piles. The old pile keeps its
+last five units. Each depletion triggers once, including when several ants
+collect the remaining units in the same tick. New sources can create further
+replacements when they run low, and refilling an old source allows another
+replacement on its next depletion. A source placed inside the colony also
+creates its successor outdoors.
+
+If no clear location is available, the replacement stays pending and retries
+later. Storage is separate from these forage sources. Reset restores the
+original ten ants, two outdoor sources and empty storage, and clears growth
+costs and replacement counters.
+
 ## Hunger
 
 Every worker has its own hunger meter: **0% is fed and 100% is fully hungry**.
@@ -156,7 +185,8 @@ If storage is empty, the worker keeps its hunger and resumes foraging for
 30 seconds before trying another meal trip. It can also collect food on the
 way home, deliver it, and eat the unit it brought back. This allows the colony
 to replenish an empty store. Stored food, lifetime deliveries and consumed
-meals are tracked separately, so food remains conserved after workers eat.
+meals and food spent on growth are tracked separately. Food accounting also
+includes the food added by automatic replacement sources.
 
 ## The model
 
@@ -217,11 +247,11 @@ manually added ants and food.
 ## Source layout
 
 - simulation/world.gd: independent outdoor and colony maps, curved tunnel
-  geometry, a 2-unit collision/visibility mask, food sources and food storage.
+  geometry, a 2-unit collision/visibility mask, safe food placement and storage.
 - simulation/pheromones.gd: per-map chemical fields, deposition, decay, local
   attraction and wall-checked sensing through the entrance.
-- simulation/simulation.gd: ant states, hunger and meals, manual spawning,
-  entrance transfers, mode transitions and fixed-step motion across both maps.
+- simulation/simulation.gd: ant states, hunger and meals, colony growth, food
+  replacement, manual spawning, entrance transfers and fixed-step motion.
 - app/habitat.gd: one map viewport, rounded terrain and tunnels, ants, overlays,
   independent zoom/pan and map-specific placement tools.
 - app/main.gd: native controls and inspection panel.
@@ -250,6 +280,11 @@ preventing stored provisions from being reharvested.
 Hunger checks cover fill time, threshold changes, the full return-to-eat trip,
 consuming the last stored unit, empty-storage recovery, carrying food while
 hungry, walls blocking meals and conservation including consumed food.
+Growth checks cover rounded costs, spending food exactly once, fed newborns,
+unique ids, meal priority, blocked birth locations and changing population
+size during motion. Source checks cover crossing the five-food threshold,
+multiple pickups in one tick, refilling sources, safe random placement,
+retrying blocked placement, normal food pheromones and seeded repeatability.
 Application checks exercise pause/step, both map views, shared selection,
 parameter controls, food placement, both pheromone brush channels, ant
 placement and batches, independent zoom, both hunger sliders, hunger during
@@ -263,10 +298,10 @@ also be exported to macOS using Godot's macOS preset and templates.
 
 ## First-version scope
 
-This is a tunable colony sandbox. Terrain and tunnels are initially fixed;
-digging, queens, brood behavior, reproduction, combat and a game economy are
-future work. Trail behavior is intentionally an approximation rather than a
-biologically calibrated model.
+This is a tunable colony sandbox. Terrain and tunnels are initially fixed.
+Worker production instantly converts stored food into new ants. Digging,
+queens, brood development, combat and a game economy are future work. Trail
+behavior is an approximation rather than a biologically calibrated model.
 
 Project code is MIT licensed. Godot license and notices are included in
 GODOT-LICENSE.txt and GODOT-COPYRIGHT.txt.
